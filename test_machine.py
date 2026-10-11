@@ -14,7 +14,7 @@ from unicorn.arm_const import UC_ARM_REG_S0, UC_ARM_REG_S1, UC_ARM_REG_SP
 
 from emu import STACK, Emu
 
-e = Emu("out/solo+slice+filter+fenv+filttab+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+glide+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 PAD, SRC, SCR, OUT, SCRD, OUTD, ARR = 0x24060000, 0x24061000, 0x24062000, 0x24062100, 0x24064000, 0x24068000, 0x24073000
 APP_PADS = 0x24020088 + 0x1840
 N = 64

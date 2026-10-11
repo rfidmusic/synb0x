@@ -1,6 +1,7 @@
 /*
  * Filter Type and filter envelope: the pad parameters. Original 1010music Blackbox, firmware 3.1.9.
- * The sound side is in filter.c; this registers the six new pad parameters and gives every pad record their defaults.
+ * The sound side is in filter.c; this registers the new pad parameters (and glide.c's two) and gives every pad record
+ * their defaults.
  *
  * Pad records (the app's settings stores, FUN_08093f20 type 3 = sample pad, type 0x4c = empty pad) hold 64 entries
  * in stock and a sample pad already uses 59, so patches/fenv.py raises the capacity to 72 (the stores come from the
@@ -25,6 +26,8 @@ typedef void (*store_add_fn)(void *store, int param, int value);
 #define TYPE_UNIPOLAR 8          /* 0..1000, shown 0.0..100.0 (the amp envelope's knobs) */
 #define TYPE_BIPOLAR  9          /* -1000..1000, shown -100.0..100.0 (the Filter knob) */
 
+void glide_register(void *table);   /* glide.c: Glide and Glide Time, registered with the filter parameters */
+
 const char *const fenv_type_names[3] = {"LP", "HP", "BP"};
 
 /* Replaces the Filter registration (bl @0x0808d59c): Filter as stock, then the new parameters. */
@@ -37,6 +40,7 @@ void fenv_register(void *table, int param, int type, const char *label, int min,
     fw_register_num(table, P_FSUSTAIN, TYPE_UNIPOLAR, "Sustain:", 0, 1000, "fenvsus");
     fw_register_num(table, P_FRELEASE, TYPE_UNIPOLAR, "Release:", 0, 1000, "fenvrel");
     fw_register_num(table, P_FDEPTH, TYPE_BIPOLAR, "Depth:", -1000, 1000, "fenvdepth");
+    glide_register(table);
 }
 
 /* Replaces the "Filter defaults to 0" entry of both pad record types (bl @0x080940de type 3, @0x08094312 type 0x4c):
@@ -51,6 +55,8 @@ void fenv_defaults(void *store, int param, int value)
     fw_store_add(store, P_FSUSTAIN, DEF_FSUSTAIN);
     fw_store_add(store, P_FRELEASE, DEF_FRELEASE);
     fw_store_add(store, P_FDEPTH, DEF_FDEPTH);
+    fw_store_add(store, P_GLIDE, DEF_GLIDE);
+    fw_store_add(store, P_GLIDETIME, DEF_GLIDETIME);
 }
 
 /*

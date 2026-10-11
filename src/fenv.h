@@ -10,6 +10,8 @@
 #define P_FSUSTAIN 0x1e4         /* 0..1000 level */
 #define P_FRELEASE 0x1e5
 #define P_FDEPTH   0x1e6         /* -1000..1000: cutoff travel, 1000 = the knob's whole range */
+#define P_GLIDE    0x1e7         /* Glide: Off / Always / Legato (glide.c) */
+#define P_GLIDETIME 0x1e8        /* Glide Time: 0..1000, 10 x^3 s */
 
 /* Defaults for new and existing pads (presets saved before this build load with these) */
 #define DEF_FILTER   1000        /* fully open: with LP and no depth, the filter is skipped */
@@ -19,5 +21,7 @@
 #define DEF_FSUSTAIN 0
 #define DEF_FRELEASE 300
 #define DEF_FDEPTH   0
+#define DEF_GLIDE    0           /* Off */
+#define DEF_GLIDETIME 200        /* 80 ms */
 
 #endif

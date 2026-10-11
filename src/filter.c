@@ -461,6 +461,10 @@ static void env_step(struct envstate *e, unsigned amp, const struct pad_cfg *c, 
     }
 }
 
+_Static_assert(sizeof(struct envstate) <= 0x14, "envstate must end before +0x58 (glide.c's per-voice state)");
+
+void glide_advance(uint8_t *filter_obj, int frames);
+
 /* Replaces the per-voice filter call. pad = the pad object the voice belongs to, amp = the voice's amp envelope stage
    byte (thunks in filter_thunk.S). */
 void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *amp)
@@ -471,6 +475,7 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     /* the envelope runs for every block, silent or not, so FENV keeps moving for the other destinations */
     struct envstate *env = ENV(obj);
     int n = fw_buf_frames(buf);
+    glide_advance(obj, n);                              /* the voice's pitch slide (glide.c), same block clock */
     int sub = SUB, subs = 0;
     float levels[MAX_SUBS];
     if (n > 0) {

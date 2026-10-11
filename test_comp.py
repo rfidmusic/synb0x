@@ -14,7 +14,7 @@ from unicorn.arm_const import UC_ARM_REG_SP
 
 from emu import STACK, Emu
 
-e = Emu("out/solo+slice+filter+fenv+filttab+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+glide+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 e.uc.mem_map(0x38800000, 0x1000)
 e.uc.mem_map(0x58024000, 0x1000)
 STORE, ARR = 0x24020088 + 0x8C90, 0x24070000

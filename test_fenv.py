@@ -16,7 +16,7 @@ from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_SP
 
 from emu import Emu
 
-IMG = "out/solo+slice+filter+fenv+filttab+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+glide+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 P_FILTER = 200
 P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH = range(0x1E1, 0x1E7)
@@ -57,8 +57,10 @@ want = [("list", P_FTYPE, ["LP", "HP", "BP"], "Type:", "fenvtype"),
         ("num", P_FDECAY, 8, "Decay:", 0, 1000, "fenvdecay"),
         ("num", P_FSUSTAIN, 8, "Sustain:", 0, 1000, "fenvsus"),
         ("num", P_FRELEASE, 8, "Release:", 0, 1000, "fenvrel"),
-        ("num", P_FDEPTH, 9, "Depth:", -1000, 1000, "fenvdepth")]
-check("Type (LP/HP/BP) and Attack/Decay/Sustain/Release/Depth registered with unique xml names", regs[1:] == want, regs[1:])
+        ("num", P_FDEPTH, 9, "Depth:", -1000, 1000, "fenvdepth"),
+        ("list", 0x1E7, ["Off", "Always", "Legato"], "Glide:", "glidemode"),
+        ("num", 0x1E8, 8, "Glide Time:", 0, 1000, "glidetime")]
+check("Type (LP/HP/BP), Attack/Decay/Sustain/Release/Depth, Glide and Glide Time registered with unique xml names", regs[1:] == want, regs[1:])
 check("new ids are below the 500-slot parameter table", all(r[1] < 500 for r in regs))
 check("the hook replaces the Filter registration call", e.r16(0x0808D59C) != 0xF7FE)
 
@@ -93,7 +95,8 @@ for kind, name in ((3, "sample pad"), (0x4C, "empty pad")):
           [ent.get(i) for i in (P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH)])
     check(f"{name}: stock Res default unchanged (500)", ent.get(0x11) == 500, ent.get(0x11))
     if kind == 3:
-        check(f"sample pad: stock entries after Filter still present (0xdc last)", 0xDC in ent and count == 65, count)
+        check(f"sample pad: stock entries after Filter still present (0xdc last), 67 entries", 0xDC in ent and count == 67, count)
+    check(f"{name}: Glide Off, Glide Time 200", (ent.get(0x1E7), ent.get(0x1E8)) == (0, 200), (ent.get(0x1E7), ent.get(0x1E8)))
     e.call(0x08093E9C, STORE, P_FDECAY)
     check(f"{name}: stock lookup finds the new entries", e.uc.reg_read(UC_ARM_REG_R0) == 300)
 
