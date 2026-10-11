@@ -1,4 +1,4 @@
-"""Pad crunch, state-variable filter (Type LP / HP / BP) and filter envelope under Unicorn.
+"""Pad crunch, state-variable filter (Morph LP - notch - HP, modulatable) and filter envelope under Unicorn.
 
 Real firmware runs for: the stock cutoff and resonance curves, the audio-buffer accessors, both voice call-site thunks.
 Stubbed: the modulated-parameter read (returns test values).
@@ -20,7 +20,8 @@ N = 64
 FS = 48000.0
 P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, _UNUSED, P_FDEPTH = range(0x1E1, 0x1E7)
 P_FRELEASE = 0x1EB                                  # 0x1e5 is a hidden stock Keys switch
-LP, HP, BP = 0, 1, 2
+P_FMORPH = 0x1E9
+LP, NOTCH, HP = 0, 500, 1000                        # Morph knob positions
 values = {}
 
 
@@ -47,17 +48,21 @@ PAD_ROW, PAD_COL = 1, 2
 
 
 def set_pad(interp=0, row=PAD_ROW, col=PAD_COL, sat=0, ftype=LP, attack=0, decay=300, sustain=0, release=300, depth=0,
-            with_fenv=True):
+            with_fenv=True, routes=()):
     """The app's record of the pad (what the screen shows and presets save)."""
     store = APP_PADS + row * 0xF0 + col * 0x30
     arr = ARR + (row * 4 + col) * 0x80
     ent = [(0x8B, 0), (0xF1, interp), (0xDB, sat)]
     if with_fenv:
-        ent += [(P_FTYPE, ftype), (P_FATTACK, attack), (P_FDECAY, decay), (P_FSUSTAIN, sustain), (P_FRELEASE, release),
+        ent += [(P_FMORPH, ftype), (P_FTYPE, 0), (P_FATTACK, attack), (P_FDECAY, decay), (P_FSUSTAIN, sustain), (P_FRELEASE, release),
                 (P_FDEPTH, depth)]
     e.uc.mem_write(arr, b"".join(struct.pack("<HHi", i, 0, v) for i, v in ent))
     e.w32(store + 4, arr)
     e.uc.mem_write(store + 10, struct.pack("<H", len(ent)))
+    rarr = arr + 0x400                            # modulation routes: {s16 amount, -, u16 source, u16 dest, u16 slot}
+    e.uc.mem_write(rarr, b"".join(struct.pack("<hHHHHH", amt, 0, src, dest, slot, 0) for src, dest, slot, amt in routes))
+    e.w32(store + 0x10, rarr if routes else 0)
+    e.uc.mem_write(store + 0x14, struct.pack("<H", len(routes)))
 
 
 def setup(knob, res=0.0, **pad):
@@ -122,7 +127,19 @@ def exp2f_fast(x):
     return (1 + f * (0.6565 + f * 0.3435)) * 2.0 ** i
 
 
+def sin_q(x):
+    x2 = x * x
+    return x * (1 - x2 / 6 * (1 - x2 / 20 * (1 - x2 / 42)))
+
+
+def weights(m):
+    """Morph 0..1 -> (LP, BP, HP) weights, as filter.c: LP full while HP comes in, then HP full while LP goes out"""
+    m = 0.0 if m <= 0.0001 else 1.0 if m >= 0.9999 else m
+    return (1.0 if m <= 0.5 else 2 * (1 - m), 0.0, 1.0 if m >= 0.5 else 2 * m)
+
+
 def model_svf(x, g, r, s, ftype, limit):
+    w = weights(ftype / 1000) if isinstance(ftype, int) else ftype
     h = 1 / (1 + r * g + g * g)
     s1, s2 = s
     out = []
@@ -132,7 +149,7 @@ def model_svf(x, g, r, s, ftype, limit):
         s1 = soft(g * hpv + bp, limit) if limit else g * hpv + bp
         lp = g * bp + s2
         s2 = g * bp + lp
-        out.append(hpv if ftype == HP else r * bp if ftype == BP else lp)
+        out.append(w[0] * lp + w[1] * r * bp + w[2] * hpv)
     return out, [s1, s2]
 
 
@@ -178,6 +195,17 @@ class Model:
         return out
 
 
+def model_block_w(m, x, w):
+    """one 32-frame step of Model with explicit weights (for a moving Morph)"""
+    if m.first:
+        m.first = False
+    m.base += (1 - exp2f_fast(-0.585 * 32 / 256)) * (m.pos - m.base)
+    g = g_of(m.base)
+    y, m.states[0] = model_svf(x, g, 1.84776, m.states[0], w, None)
+    y, m.states[1] = model_svf(y, g, m.r, m.states[1], w, 4 - 3 * m.d if m.d > 0.001 else None)
+    return y
+
+
 fails = 0
 
 
@@ -202,9 +230,9 @@ setup(-1.0, ftype=HP)
 l, _ = run(x)
 check("HP, Filter fully left, no depth: buffer untouched", all(abs(a - b) < 1e-7 for a, b in zip(l, x)))
 reset()
-setup(1.0, ftype=BP)
+setup(1.0, ftype=NOTCH)
 l, _ = run(x)
-check("BP is never skipped", any(abs(a - b) > 1e-4 for a, b in zip(l, x)))
+check("a notch (Morph 50%) is never skipped, even with Filter fully right", any(abs(a - b) > 1e-4 for a, b in zip(l, x)))
 reset()
 setup(0.2)
 l, _ = run(x, silent=True)
@@ -216,7 +244,7 @@ check("pad record without the new settings (defaults: LP): Filter at centre (640
 
 # --- each type matches the stmlib SVF model, block after block (knob glide spread over the 32-frame steps)
 sig = [math.sin(i * 0.37) * 0.3 + math.sin(i * 0.05) * 0.4 for i in range(3 * N)]
-for ftype, name in ((LP, "low-pass"), (HP, "high-pass"), (BP, "band-pass")):
+for ftype, name in ((LP, "low-pass"), (HP, "high-pass"), (NOTCH, "notch")):
     reset()
     setup(-0.2, res=0.3, ftype=ftype)
     m, err = Model(-0.2, 0.3, ftype), 0.0
@@ -247,7 +275,7 @@ ref = m.block(sig[2 * N:3 * N])
 check("Filter knob moved: cutoff glides (equals the model)", max(abs(p - q) for p, q in zip(l, ref)) < 1e-4)
 
 
-# --- low-pass, high-pass and band-pass behave
+# --- low-pass, high-pass and notch behave
 def response(knob, res, hz_test, ftype=LP, blocks=8):
     reset()
     setup(knob, res, ftype=ftype)
@@ -267,12 +295,15 @@ lp_low, lp_high = response(k, 0.5, 100), response(k, 0.5, 12000)       # Res 0.5
 check("LP at 1 kHz passes 100 Hz and cuts 12 kHz", lp_low > 0.9 and lp_high < 0.1, (lp_low, lp_high))
 hp_low, hp_high = response(k, 0.5, 100, HP), response(k, 0.5, 12000, HP)
 check("HP at 1 kHz cuts 100 Hz and passes 12 kHz", hp_low < 0.1 and hp_high > 0.9, (hp_low, hp_high))
-bp_mid, bp_low, bp_high = response(k, 0.5, 1000, BP), response(k, 0.5, 100, BP), response(k, 0.5, 10000, BP)
-check(f"BP at 1 kHz: passes 1 kHz (x{bp_mid:.2f}), cuts 100 Hz and 10 kHz", bp_mid > 0.5 and bp_low < 0.05 and bp_high < 0.05,
-      (bp_mid, bp_low, bp_high))
-bp_narrow = response(k, 0.9, 1400, BP) / response(k, 0.9, 1000, BP)
-bp_wide = response(k, 0.2, 1400, BP) / response(k, 0.2, 1000, BP)
-check("BP: more Res = narrower band", bp_narrow < bp_wide, (bp_narrow, bp_wide))
+n_mid, n_low, n_high = response(k, 0.5, 1000, NOTCH), response(k, 0.5, 100, NOTCH), response(k, 0.5, 10000, NOTCH)
+check(f"notch at 1 kHz: cuts 1 kHz (x{n_mid:.3f}), passes 100 Hz and 10 kHz", n_mid < 0.05 and n_low > 0.8 and n_high > 0.8,
+      (n_mid, n_low, n_high))
+w = [weights(m / 1000) for m in range(0, 1001, 50)]
+check("Morph never fades both outputs: one of LP / HP is always at full level (no volume dip mid-sweep)",
+      all(max(a, c) == 1.0 for a, _, c in w), w)
+sweep = [response(k, 0.5, 300, m) for m in (0, 250, 500, 750, 1000)]
+check("Morph sweep at 300 Hz (below the cutoff): LP passes it, HP cuts it, in between it moves steadily",
+      sweep[0] > 0.9 and sweep[-1] < 0.05 and all(b < a + 0.05 for a, b in zip(sweep, sweep[1:])), [round(v, 3) for v in sweep])
 one, two = response(k, 0.5, 2000), response(k, 0.5, 4000)
 check(f"24 dB/oct: one octave above cutoff {20 * math.log10(one):.0f} dB, two octaves {20 * math.log10(two):.0f} dB", two < 0.02 and two / one < 0.09, (one, two))
 flat, peak = response(k, 0.0, 1000), response(k, 0.5, 1000)
@@ -422,9 +453,9 @@ for b in range(3):
     err = max(err, max(abs(p - q) for p, q in zip(l, m.block(sig[b * N:(b + 1) * N], levels=[1.0, 1.0]))))
 check("negative Depth closes the filter by Depth x envelope (equals the model)", err < 1e-4, err)
 reset()
-setup(-0.4, attack=300, decay=300, sustain=500, release=300, depth=700, ftype=BP)
+setup(-0.4, attack=300, decay=300, sustain=500, release=300, depth=700, ftype=NOTCH)
 amp(1)
-m = Model(-0.4, 0.0, BP, depth=0.7)
+m = Model(-0.4, 0.0, NOTCH, depth=0.7)
 err = 0.0
 for b in range(4):
     lv0 = level()
@@ -434,6 +465,98 @@ for b in range(4):
     ref = m.block(sig[b * N:(b + 1) * N] if b < 3 else sig[:N], levels=[lv0 + step, lv0 + 2 * step])
     err = max(err, max(abs(p - q) for p, q in zip(l, ref)))
 check("a moving envelope steps the cutoff every 32 frames (equals the model)", err < 1e-4, err)
+
+# --- Morph: blends in between, modulation routes move it
+for m in (250, 750, 120, 900):
+    reset()
+    setup(-0.2, res=0.4, ftype=m)
+    mod, err = Model(-0.2, 0.4, m), 0.0
+    for b_ in range(3):
+        l, _ = run(sig[b_ * N:(b_ + 1) * N])
+        err = max(err, max(abs(p - q) for p, q in zip(l, mod.block(sig[b_ * N:(b_ + 1) * N]))))
+    check(f"Morph {m / 10:.0f}%: LP / HP mix (equals the model)", err < 1e-4, err)
+
+OBJ_AMP_A = OBJ - 0x7C                            # sample voice: amp stage byte at voice + 0x2c = obj - 0x7c
+
+
+def run_voice(left, obj=OBJ, amp_at=OBJ_AMP_A, pad=PAD):
+    e.uc.mem_write(amp_at, b"\x01")
+    e.uc.mem_write(LBUF, struct.pack(f"<{len(left)}f", *left))
+    e.uc.mem_write(BUF, struct.pack("<IIIIBB", len(left), len(left), LBUF, 0, 0, 0))
+    e.call("filter_process", obj, BUF, pad, amp_at)
+    return list(struct.unpack(f"<{len(left)}f", e.uc.mem_read(LBUF, 4 * len(left))))
+
+
+VOICE_A = OBJ - 0xA8
+for src, field, val, amt, name in ((4, 0x524, 1.0, 500, "LFO"), (0xE, 0x90, 0.5, 1000, "KEY"), (0xD, 0x88, -0.5, -1000, "VEL")):
+    reset()
+    e.uc.mem_write(VOICE_A + field, struct.pack("<f", val))
+    setup(-0.2, res=0.4, ftype=LP, routes=[(src, P_FMORPH, 0, amt)])
+    mod, err = Model(-0.2, 0.4, 500), 0.0                 # 0 + amount x value = 0.5: the notch
+    for b_ in range(3):
+        l = run_voice(sig[b_ * N:(b_ + 1) * N])
+        err = max(err, max(abs(p - q) for p, q in zip(l, mod.block(sig[b_ * N:(b_ + 1) * N]))))
+    check(f"{name} -> Morph ({amt / 10:+.0f}% x {val}): sample voice morphs from LP to the notch (equals the model)", err < 1e-4, err)
+reset()
+e.uc.mem_write(VOICE_A + 0x524, struct.pack("<f", 1.0))
+setup(-0.2, res=0.4, ftype=NOTCH, routes=[(4, P_FMORPH, 0, 1000)])
+mod, err = Model(-0.2, 0.4, 1000), 0.0
+for b_ in range(2):
+    l = run_voice(sig[b_ * N:(b_ + 1) * N])
+    err = max(err, max(abs(p - q) for p, q in zip(l, mod.block(sig[b_ * N:(b_ + 1) * N]))))
+check("Morph + modulation clamps at HP (50% + 100% x 1)", err < 1e-4, err)
+reset()
+setup(1.0, ftype=LP, routes=[(4, P_FMORPH, 0, 1000)])
+e.uc.mem_write(VOICE_A + 0x524, struct.pack("<f", 0.0))
+l = run_voice(sine(1000))
+check("a route to Morph keeps the filter running even at LP fully open (the source may move it)",
+      any(abs(a - b) > 1e-6 for a, b in zip(l, sine(1000))))
+reset()
+setup(-0.2, res=0.4, ftype=LP, attack=0, decay=0, sustain=1000, release=0, routes=[(1, P_FMORPH, 0, 500)])
+mod, err = Model(-0.2, 0.4, LP), 0.0
+for b_ in range(3):
+    l = run_voice(sig[b_ * N:(b_ + 1) * N])
+    ref = []
+    for k in range(2):                                    # FENV level 1 from the first step: Morph 0 + 0.5 x 1
+        ref += model_block_w(mod, sig[b_ * N + 32 * k: b_ * N + 32 * (k + 1)], weights(0.5))
+    err = max(err, max(abs(p - q) for p, q in zip(l, ref)))
+check("FENV -> Morph: follows the envelope per 32-frame step (equals the model)", err < 1e-4, err)
+CPAD = 0x24070000
+for v in (0, 1):
+    cobj = CPAD + 0x3AC + v * 0x410
+    e.w32(cobj + 0x84, PARAMS)
+    e.uc.mem_write(cobj + 4, b"\xa5" * 0x30)
+    e.uc.mem_write(cobj + 0x40, bytes(0x20))
+    e.uc.mem_write(cobj - 0x14C + 0x54, struct.pack("<f", 0.5))      # KEY of this voice
+    e.w32(CPAD + 0x18, 3 << 8 | 0)
+    set_pad(row=3, col=0, ftype=LP, routes=[(0xE, P_FMORPH, 1, 1000)])
+    values[PARAMS + 8], values[PARAMS + 0x44] = -0.2, 0.4
+    mod, err = Model(-0.2, 0.4, 500), 0.0
+    for b_ in range(2):
+        l = run_voice(sig[b_ * N:(b_ + 1) * N], obj=cobj, amp_at=cobj + 0x110, pad=CPAD)
+        err = max(err, max(abs(p - q) for p, q in zip(l, mod.block(sig[b_ * N:(b_ + 1) * N]))))
+    check(f"clip / slicer voice {v + 1}: KEY -> Morph read from its own block", err < 1e-4, err)
+
+# --- a 3.1.9-syn preset: Type HP / BP becomes Morph 100 / 50 (the notch: Morph has no BP) in the record, once
+for old, want_morph, name in ((1, 1000, "HP"), (2, 500, "BP"), (0, 0, "LP")):
+    reset()
+    store = APP_PADS + PAD_ROW * 0xF0 + PAD_COL * 0x30
+    arr = ARR + (PAD_ROW * 4 + PAD_COL) * 0x80
+    ents = [(0x8B, 0), (0xDB, 0), (P_FTYPE, old), (P_FMORPH, 0), (P_FDEPTH, 0)]
+    e.uc.mem_write(arr, b"".join(struct.pack("<HHi", i, 0, v) for i, v in ents))
+    e.w32(store + 4, arr)
+    e.uc.mem_write(store + 10, struct.pack("<H", len(ents)))
+    e.w32(store + 0x10, 0)
+    e.uc.mem_write(store + 0x14, struct.pack("<H", 0))
+    values[PARAMS + 8], values[PARAMS + 0x44] = -0.2, 0.4
+    e.w32(PAD + 0x18, PAD_ROW << 8 | PAD_COL)
+    run(sig[:N])
+    rec = {struct.unpack_from("<H", e.uc.mem_read(arr + 8 * i, 2))[0]: e.r32(arr + 8 * i + 4) for i in range(len(ents))}
+    check(f"3.1.9-syn preset with Type {name}: record now Morph {want_morph / 10:.0f}%, Type LP",
+          rec[P_FMORPH] == want_morph and rec[P_FTYPE] == 0, rec)
+    e.w32(arr + 8 * 3 + 4, 300)                    # the user then turns Morph
+    run(sig[:N])
+    check(f"  ... and a later Morph edit is kept (no second conversion)", e.r32(arr + 8 * 3 + 4) == 300 and e.r32(arr + 8 * 2 + 4) == 0)
 
 # --- crunch
 reset()
@@ -483,7 +606,7 @@ def is_crunched(l):
 reset()
 values[PARAMS + 8] = 1.0
 e.w32(PAD + 0x18, PAD_ROW << 8 | PAD_COL)
-base = [(0x8B, 0), (0xDB, 0), (P_FTYPE, LP), (P_FDEPTH, 0)]
+base = [(0x8B, 0), (0xDB, 0), (P_FMORPH, LP), (P_FDEPTH, 0)]
 record(base + [(0xF1, 0)])
 run(sine(997))
 l, _ = run(sine(997))

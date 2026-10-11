@@ -14,9 +14,10 @@
  *      their ranges. Drive rides on Res: below the default (noon) the filter is clean; from noon to full the input is
  *      pushed into a soft clipper (up to +12 dB) and the resonant integrator is soft-limited, so high resonance
  *      growls and saturates instead of only getting louder.
- *   3. Type (new pad param, fenv.c): LP, HP or BP. The Filter knob is now cutoff across its whole travel, far left
+ *   3. Morph (new pad param, fenv.c): LP at 0, notch at 50 %, HP at 100 %, mixing LP and HP in each stage at full
+ *      level (morph_weights), and a modulation destination (any source, applied here). The Filter knob is cutoff across its whole travel, far left
  *      20 Hz to far right 20.5 kHz (the stock curve's 0..1 half), instead of centre = off, left LP, right HP.
- *      LP fully open or HP fully closed with no envelope depth skips the filter, as centre did before.
+ *      LP fully open or HP fully closed, with nothing moving the filter, skips it, as centre did before.
  *   4. Filter envelope (new pad params, fenv.c): per voice ADSR, times 0 .. 60 s (60 x^3 s on the 0..100 knob, like the
  *      amp envelope's cubic), Sustain a level. Gated by the voice's own amp envelope: stages 1..3 (attack, decay,
  *      sustain) are gate on, 4 (release, also choke and one-shot end) is gate off. Depth -100..+100 moves the cutoff by
@@ -195,14 +196,16 @@ static inline __attribute__((always_inline)) float soft(float x, float inv_t, fl
 }
 
 /*
- * stmlib Svf::Process<FILTER_MODE_LOW_PASS / HIGH_PASS / BAND_PASS_NORMALIZED> for one channel with coefficients fixed
- * for the call. CLIP: soft-limit the band-pass integrator (the resonant loop); only used on the resonant stage while
- * driven. Band-pass is normalised (r * bp: unity at the centre), so Res narrows it without making it louder.
+ * stmlib Svf::Process<FILTER_MODE_LOW_PASS / HIGH_PASS> for one channel with coefficients fixed for the call, and the
+ * Morph crossfade of the two. CLIP: soft-limit the band-pass integrator (the resonant loop); only used on the resonant
+ * stage while driven.
  */
-enum { TYPE_LP, TYPE_HP, TYPE_BP, TYPES };
+enum { TYPE_LP, TYPE_HP, TYPE_MIX };
 #define OUT_LP(hp, bp, lp, r) (lp)
 #define OUT_HP(hp, bp, lp, r) (hp)
-#define OUT_BP(hp, bp, lp, r) ((r) * (bp))
+/* Morph: a mix of the two in each stage (weights from morph_weights). Halfway it is LP + HP, which in a state-variable
+   filter cancel at the cutoff: a notch, two of them in series here (the Oberheim SEM's LP - Notch - HP idea, twice). */
+#define OUT_MIX(hp, bp, lp, r) (wl * (lp) + wh * (hp))
 
 /*
  * Both stages in one pass per sample (and, while Res drives, the input soft clip too), so each sample is loaded and
@@ -229,9 +232,12 @@ enum { TYPE_LP, TYPE_HP, TYPE_BP, TYPES };
         x[i] = OUT(hp, bp, lp, r);                                                                                 \
     }
 
-/* s = {stage 1 s1, stage 1 s2, stage 2 s1, stage 2 s2} for this channel. drive 0 = clean. */
-static void svf2(float *x, int n, float g, float r, float *s[4], int type, float drive)
+/* s = {stage 1 s1, stage 1 s2, stage 2 s1, stage 2 s2} for this channel. drive 0 = clean. w = {LP, HP} weights: pure LP
+   or pure HP takes that output's own loop (no blending cost), anything else crossfades. */
+static void svf2(float *x, int n, float g, float r, float *s[4], const float w[2], float drive)
 {
+    float wl = w[0], wh = w[1];
+    int type = wh == 0.0f ? TYPE_LP : wl == 0.0f ? TYPE_HP : TYPE_MIX;
     float h1 = 1.0f / (1.0f + R_BUTTERWORTH * g + g * g), rg1 = R_BUTTERWORTH + g;
     float h2 = 1.0f / (1.0f + r * g + g * g), rg2 = r + g;
     float a1 = *s[0], a2 = *s[1], b1 = *s[2], b2 = *s[3];
@@ -240,8 +246,8 @@ static void svf2(float *x, int n, float g, float r, float *s[4], int type, float
         float limit = 4.0f - 3.0f * drive, inv = 1.0f / limit;  /* resonant stage ceiling, 4 down to 1 */
         if (type == TYPE_HP)
             SVF2_LOOP(OUT_HP, 1)
-        else if (type == TYPE_BP)
-            SVF2_LOOP(OUT_BP, 1)
+        else if (type == TYPE_MIX)
+            SVF2_LOOP(OUT_MIX, 1)
         else
             SVF2_LOOP(OUT_LP, 1)
     } else {
@@ -251,8 +257,8 @@ static void svf2(float *x, int n, float g, float r, float *s[4], int type, float
         (void)inv;
         if (type == TYPE_HP)
             SVF2_LOOP(OUT_HP, 0)
-        else if (type == TYPE_BP)
-            SVF2_LOOP(OUT_BP, 0)
+        else if (type == TYPE_MIX)
+            SVF2_LOOP(OUT_MIX, 0)
         else
             SVF2_LOOP(OUT_LP, 0)
     }
@@ -352,10 +358,14 @@ static void adc_drive(float **ch, int n, float d)
  * value at +4; array at store +4, count at store +10), instead of one stock lookup per setting. Settings missing from
  * the store (a pad record from before this build cannot have them: the defaults add them) keep their defaults.
  */
+#define MORPH_ROUTES 3             /* a parameter has three modulation slots */
 struct pad_cfg {
     unsigned interp, drive;
-    int type;
+    float morph;                                     /* 0 LP .. 0.5 notch .. 1 HP, before modulation */
     float attack, decay, sustain, release, depth;    /* seconds, seconds, level, seconds, cutoff travel -1..1 */
+    unsigned routes;                                 /* modulation routes to Morph, from the pad record */
+    uint16_t source[MORPH_ROUTES];
+    float amount[MORPH_ROUTES];
 };
 
 static float seg_time(int v)                       /* knob 0..1000 -> 60 x^3 seconds, 0 at 0 */
@@ -371,20 +381,23 @@ static float seg_time(int v)                       /* knob 0..1000 -> 60 x^3 sec
  * setting. Positions are checked against the entry id on every read; a different store, a different count or a
  * mismatch rescans. Settings the record does not have (a record from before this build) keep their defaults.
  */
-static const uint16_t cfg_ids[8] = {0xf1, 0xdb, P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH};
+#define CFG_IDS 9
+static const uint16_t cfg_ids[CFG_IDS] = {0xf1, 0xdb, P_FMORPH, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH,
+                                          P_FTYPE};
 struct cfg_cache {
     const uint8_t *entries;
-    uint16_t count;
-    uint8_t idx[8];
+    uint8_t count;               /* a record holds at most 72 */
+    uint8_t idx[CFG_IDS];
     uint16_t magic;
 };
 #define CFG_CACHE(obj) ((struct cfg_cache *)((obj) + 0x74))
-#define CMAGIC 0x4346u           /* "CF" */
+#define CMAGIC 0x4347u           /* "CG": bumped with the layout */
 _Static_assert(sizeof(struct cfg_cache) == 16, "the cache must fit +0x74..+0x83");
 
 static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
 {
-    int v[8] = {0, 0, DEF_FTYPE, DEF_FATTACK, DEF_FDECAY, DEF_FSUSTAIN, DEF_FRELEASE, DEF_FDEPTH};
+    int v[CFG_IDS] = {0, 0, DEF_FMORPH, DEF_FATTACK, DEF_FDECAY, DEF_FSUSTAIN, DEF_FRELEASE, DEF_FDEPTH, DEF_FTYPE};
+    c->routes = 0;
     if (pad) {
         uint32_t id = *(const uint32_t *)(pad + 0x18);
         unsigned row = (id >> 8) & 0xff, col = id & 0xff;
@@ -394,7 +407,7 @@ static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
             unsigned count = STORE_COUNT(store);
             struct cfg_cache *cc = CFG_CACHE(obj);
             int ok = e && cc->magic == CMAGIC && cc->entries == e && cc->count == count;
-            for (unsigned k = 0; ok && k < 8; k++) {
+            for (unsigned k = 0; ok && k < CFG_IDS; k++) {
                 unsigned i = cc->idx[k];
                 if (i == ABSENT)
                     continue;
@@ -404,27 +417,48 @@ static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
                     v[k] = ENTRY_VALUE(e, i);
             }
             if (!ok && e) {
-                for (unsigned k = 0; k < 8; k++)
+                for (unsigned k = 0; k < CFG_IDS; k++)
                     cc->idx[k] = ABSENT;
                 for (unsigned i = 0; i < count; i++) {
                     unsigned eid = ENTRY_ID(e, i);
                     if (eid != 0xf1 && eid != 0xdb && eid - P_FTYPE > P_FRELEASE - P_FTYPE)
                         continue;                       /* not one of ours: most of the record */
-                    for (unsigned k = 0; k < 8; k++)
+                    for (unsigned k = 0; k < CFG_IDS; k++)
                         if (eid == cfg_ids[k]) {
                             cc->idx[k] = (uint8_t)i;
                             v[k] = ENTRY_VALUE(e, i);
                         }
                 }
                 cc->entries = e;
-                cc->count = (uint16_t)count;
+                cc->count = (uint8_t)count;
                 cc->magic = CMAGIC;
             }
+            /* A 3.1.9-syn preset: Type HP / BP becomes Morph 100 / 50 (BP has no Morph position: 50 is the notch)
+               in the record itself, once (the next preset
+               save stores it that way); Type goes back to LP so nothing converts again. */
+            unsigned ti = cc->idx[8], mi = cc->idx[2];
+            if (e && (v[8] == 1 || v[8] == 2) && ti != ABSENT && mi != ABSENT) {
+                v[2] = v[8] == 1 ? 1000 : 500;
+                *(int32_t *)(uintptr_t)(e + 8 * mi + 4) = v[2];
+                *(int32_t *)(uintptr_t)(e + 8 * ti + 4) = 0;
+                v[8] = 0;
+            }
+            /* modulation routes (12 bytes: amount at +0 as s16 / 1000, source +4, destination +6, slot +8; array at
+               store + 0x10, count at + 0x14): the few that target Morph. Short list, read every block. */
+            const uint8_t *rt = *(const uint8_t *const *)((const uint8_t *)store + 0x10);
+            unsigned nr = *(const uint16_t *)((const uint8_t *)store + 0x14);
+            for (unsigned i = 0; rt && i < nr && c->routes < MORPH_ROUTES; i++, rt += 12)
+                if (*(const uint16_t *)(rt + 6) == P_FMORPH && *(const uint16_t *)(rt + 4) != 0 &&
+                    *(const int16_t *)rt != 0) {                    /* amount 0 cannot move it */
+                    c->source[c->routes] = *(const uint16_t *)(rt + 4);
+                    c->amount[c->routes] = (float)*(const int16_t *)rt * 0.001f;
+                    c->routes++;
+                }
         }
     }
     c->interp = (unsigned)v[0];
     c->drive = (unsigned)v[1];
-    c->type = v[2] >= 0 && v[2] < TYPES ? v[2] : TYPE_LP;
+    c->morph = v[2] < 0 ? 0.0f : v[2] > 1000 ? 1.0f : (float)v[2] * 0.001f;
     c->attack = seg_time(v[3]);
     c->decay = seg_time(v[4]);
     c->sustain = v[5] < 0 ? 0.0f : v[5] > 1000 ? 1.0f : (float)v[5] * 0.001f;
@@ -551,6 +585,52 @@ _Static_assert(sizeof(struct envstate) <= 0x14, "envstate must end before +0x58 
 
 void glide_advance(uint8_t *filter_obj, int frames);
 
+/*
+ * Morph modulation, applied here rather than through the engine's routing (its destinations are a fixed table in stock
+ * code): the value of each source for this voice, read where the stock routing would point a slot.
+ *   sample voices (amp stage at obj - 0x7c): voice = obj - 0xa8; VEL +0x88, KEY +0x90, LFO +0x524;
+ *     MIDI pitch bend / mod wheel / volume / pan at pad +0x140 / +0x128 / +0x130 / +0x138
+ *   clip / slicer voices (amp stage at obj + 0x110): block = obj - 0x14c; VEL +0x4c, KEY +0x54, LFO +0x12c;
+ *     MIDI at pad +0xb64 / +0xb4c / +0xb54 / +0xb5c
+ *   FENV: the voice's own envelope level, per 32-frame step. CC (0x8000) is not read: stock routes it elsewhere.
+ */
+static float source_value(unsigned src, const uint8_t *obj, const uint8_t *pad, const uint8_t *amp)
+{
+    int b = amp == obj + 0x110;                          /* clip / slicer voice */
+    const uint8_t *v = b ? obj - 0x14c : obj - 0xa8;
+    const uint8_t *at = 0;
+    switch (src) {
+    case 0x0d: at = v + (b ? 0x4c : 0x88); break;        /* VEL */
+    case 0x0e: at = v + (b ? 0x54 : 0x90); break;        /* KEY */
+    case 0x04: at = v + (b ? 0x12c : 0x524); break;      /* LFO */
+    case 0x19: at = pad ? pad + (b ? 0xb64 : 0x140) : 0; break;     /* pitch bend */
+    case 0x1a: at = pad ? pad + (b ? 0xb4c : 0x128) : 0; break;     /* mod wheel */
+    case 0x1c: at = pad ? pad + (b ? 0xb54 : 0x130) : 0; break;     /* MIDI volume */
+    case 0x1d: at = pad ? pad + (b ? 0xb5c : 0x138) : 0; break;     /* MIDI pan */
+    }
+    if (!at || (amp != obj + 0x110 && amp != obj - 0x7c))
+        return 0.0f;
+    float x = *(const float *)at;
+    return x == x && x > -4.0f && x < 4.0f ? x : 0.0f;
+}
+
+/* Morph 0..1 -> {LP, HP} weights: LP stays full while HP comes in (0 -> 50 %), then HP stays full while LP goes out.
+   Halfway it is LP + HP, the notch at full level; a plain 50 / 50 crossfade (the SEM pot) would drop everything else by
+   6 dB per stage, 12 dB here. The end points are exact. */
+static void morph_weights(float m, float w[2])
+{
+    if (m <= 0.0001f)
+        m = 0.0f;
+    else if (m >= 0.9999f)
+        m = 1.0f;
+    w[0] = m <= 0.5f ? 1.0f : 2.0f * (1.0f - m);
+    w[1] = m >= 0.5f ? 1.0f : 2.0f * m;
+}
+
+/* Smoothed Morph (knob and block-rate sources) per voice, in the filter object at +0x88 (written only by the stock
+   voice start, which also clears st->on, and st->on == 0 re-seeds it) */
+#define MORPH_BASE(obj) (*(float *)((obj) + 0x88))
+
 /* Replaces the per-voice filter call. pad = the pad object the voice belongs to, amp = the voice's amp envelope stage
    byte (thunks in filter_thunk.S). */
 void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *amp)
@@ -600,8 +680,17 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     float knob = params ? fw_param(params + 8) : 1.0f;
     float pos = (knob + 1.0f) * 0.5f;                       /* cutoff position 0..1 on the stock curve */
     pos = pos < 0.0f ? 0.0f : pos > 1.0f ? 1.0f : pos;
-    int type = cfg.type;
-    int active = cfg.depth != 0.0f || type == TYPE_BP || (type == TYPE_LP ? pos < 0.999f : pos > 0.001f);
+    /* Morph: the knob plus its routes; FENV routes move with the envelope, the rest once per block */
+    float morph = cfg.morph, morph_env = 0.0f;
+    for (unsigned i = 0; i < cfg.routes; i++) {
+        if (cfg.source[i] == 1)
+            morph_env += cfg.amount[i];
+        else
+            morph += cfg.amount[i] * source_value(cfg.source[i], obj, pad, amp);
+    }
+    /* skipped only when it cannot change the sound: LP fully open or HP fully closed, nothing moving it */
+    int still = cfg.depth == 0.0f && cfg.routes == 0;
+    int active = !(still && ((cfg.morph <= 0.0001f && pos >= 0.999f) || (cfg.morph >= 0.9999f && pos <= 0.001f)));
     if (!active) {
         st->on = 0;
         if (!crunching)
@@ -646,6 +735,7 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
         st->r = r;
         st->drive = drive;
         env->base = pos;
+        MORPH_BASE(obj) = morph;
         for (int k = 0; k < 2; k++)
             st->s1[k][0] = st->s1[k][1] = st->s2[k][0] = st->s2[k][1] = 0.0f;
         st->on = 1;
@@ -658,6 +748,10 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     for (int k = 0; k < subs; k++) {
         int at = k * sub, len = k == subs - 1 ? n - at : sub;
         env->base += glide * (pos - env->base);
+        MORPH_BASE(obj) += glide * (morph - MORPH_BASE(obj));
+        float m = MORPH_BASE(obj) + morph_env * levels[k];
+        float w[2];
+        morph_weights(m < 0.0f ? 0.0f : m > 1.0f ? 1.0f : m, w);
         float p = env->base + cfg.depth * levels[k];
         p = p < 0.0f ? 0.0f : p > 1.0f ? 1.0f : p;
         float hz = fw_cutoff_hz(p);
@@ -671,7 +765,7 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
             if (!ch[c])
                 continue;
             float *sv[4] = {&st->s1[0][c], &st->s2[0][c], &st->s1[1][c], &st->s2[1][c]};
-            svf2(ch[c] + at, len, g, st->r, sv, type, st->drive);
+            svf2(ch[c] + at, len, g, st->r, sv, w, st->drive);
         }
     }
 }

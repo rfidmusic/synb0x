@@ -4,7 +4,8 @@
 
 /* New pad parameters: unregistered in stock (ids < 500 are table slots; the mod uses 0x1d0..0x1da elsewhere) */
 #define P_FILTER   200           /* stock "Filter:", -1000..1000: now cutoff, far left lowest, far right highest */
-#define P_FTYPE    0x1e1         /* Type: LP / HP / BP */
+#define P_FTYPE    0x1e1         /* 3.1.9-syn's Type (LP / HP / BP): hidden, read only to convert old presets */
+#define P_FMORPH   0x1e9         /* Morph: 0..1000, LP (0) .. notch (500) .. HP (1000); modulatable (filter.c) */
 #define P_FATTACK  0x1e2         /* 0..1000, 60 x^3 s */
 #define P_FDECAY   0x1e3
 #define P_FSUSTAIN 0x1e4         /* 0..1000 level */
@@ -17,7 +18,8 @@
 
 /* Defaults for new and existing pads (presets saved before this build load with these) */
 #define DEF_FILTER   1000        /* fully open: with LP and no depth, the filter is skipped */
-#define DEF_FTYPE    0
+#define DEF_FTYPE    0           /* LP: nothing to convert */
+#define DEF_FMORPH   0           /* LP */
 #define DEF_FATTACK  0
 #define DEF_FDECAY   300         /* 1.6 s */
 #define DEF_FSUSTAIN 0

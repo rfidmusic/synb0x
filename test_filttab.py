@@ -19,6 +19,7 @@ stock = Emu("firmware/BLACKBOX-3.1.9.bin", "out/cave.elf")
 P_FILTER, P_RES = 200, 0x11
 P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, _UNUSED, P_FDEPTH = range(0x1E1, 0x1E7)
 P_FRELEASE = 0x1EB                                  # 0x1e5 is a hidden stock Keys switch
+P_FMORPH = 0x1E9
 fails = 0
 
 
@@ -71,14 +72,14 @@ def pad_record(row, col, values):
     e.uc.mem_write(store + 10, struct.pack("<H", len(values)))
 
 
-vals = {4: 800, P_FILTER: -250, P_RES: 640, P_FTYPE: 2, P_FDEPTH: -300, P_FATTACK: 10, P_FDECAY: 20, P_FSUSTAIN: 30,
+vals = {4: 800, P_FILTER: -250, P_RES: 640, P_FMORPH: 620, P_FDEPTH: -300, P_FATTACK: 10, P_FDECAY: 20, P_FSUSTAIN: 30,
         P_FRELEASE: 40, 0x8B: 0}
 pad_record(2, 1, vals)
 e.uc.mem_write(REF, struct.pack("<IH", 0, 2 << 4 | 1))   # pad ref: +4 = row << 4 | col, class 0
 calls.clear()
 e.call("filt_page", APP, REF, 0x24047000, 5)
-want = [("clear",)] + [("add", i, vals[i]) for i in (P_FILTER, P_RES, P_FTYPE, P_FDEPTH, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE)]
-check("Filt page: Filter, Res, Type, Depth / Attack, Decay, Sustain, Release, from the pad's record", calls == want, calls)
+want = [("clear",)] + [("add", i, vals[i]) for i in (P_FILTER, P_RES, P_FMORPH, P_FDEPTH, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE)]
+check("Filt page: Filter, Res, Morph, Depth / Attack, Decay, Sustain, Release, from the pad's record", calls == want, calls)
 check("Filt page reports filled (1)", e.uc.reg_read(UC_ARM_REG_R0) == 1)
 
 # the same page through the real list functions, with modulation routes in the record (they light the indicators)
@@ -100,8 +101,8 @@ for i in range(e.r32(LIST)):
     got[pid] = tuple(e.r16(LIST + 12 * i + 6 + 2 * k) for k in range(3))   # sources in slots 0, 1, 2 (+6, +8, +10)
 check("Filt page, real list: Filter's slots carry VEL and FENV, Res's slot 2 carries LFO (modulation indicators)",
       got.get(200) == (0x0D, 0x01, 0) and got.get(0x11) == (0, 0, 0x04), got)
-check("Filt page, real list: knobs without routes have none (Type, Attack)",
-      got.get(P_FTYPE) == (0, 0, 0) and got.get(P_FATTACK) == (0, 0, 0), (got.get(P_FTYPE), got.get(P_FATTACK)))
+check("Filt page, real list: knobs without routes have none (Morph, Attack)",
+      got.get(P_FMORPH) == (0, 0, 0) and got.get(P_FATTACK) == (0, 0, 0), (got.get(P_FMORPH), got.get(P_FATTACK)))
 check("Filt page, real list: the record's two trailing words copied (+0x248, +0x24c) as the stock pad pages do",
       e.r32(LIST + 0x248) & 0xFFFFFFFF == 0xA1B2C3D4 and e.r32(LIST + 0x24C) == 0x01020304)
 e.w32(store + 0x10, 0)
@@ -195,6 +196,25 @@ check("other bipolar knobs still show -100..100 (Pan -50.0%, Depth -30.0%)",
       (knob_text(0x62, 9, -500), knob_text(0x1E6, 9, -300)))
 check("knob-cell formatter calls go through the wrapper (3 sites)",
       all(e.r16(a) != stock.r16(a) for a in (0x080A957E, 0x080A965E, 0x080A9704)))
+
+# --- Morph is a modulation target: the 28-id stock list + Morph, at every place that reads it
+targets = e.r32(0x080B8924) & 0xFFFFFFFF
+ids = list(struct.unpack("<29H", e.uc.mem_read(targets, 58)))
+stock_ids = list(struct.unpack("<28H", stock.uc.mem_read(0x080F12BC, 56)))
+check("modulation targets: the stock 28 ids, then Morph (0x1e9)", ids == stock_ids + [0x1E9], [hex(i) for i in ids])
+check("both references and all three lengths updated (29 ids, end = start + 58)",
+      e.r32(0x080B8BF8) & 0xFFFFFFFF == targets and e.uc.mem_read(0x080B88D6, 4) == bytes.fromhex("03f13a01")
+      and e.r16(0x080B896A) == 0x221D and e.r16(0x080B8980) == 0x221D)
+SCREEN2 = 0x24000000
+for pid, want in ((0x1E9, 1), (200, 1), (P_FATTACK, 0), (0x1E1, 0)):
+    e.uc.mem_write(SCREEN2 + 0xF6CC, struct.pack("<I", 5))
+    e.stub(0x080B886C, lambda: e.ret(pid))                 # the focused knob's parameter
+    e.uc.reg_write(UC_ARM_REG_R0, SCREEN2)
+    e.uc.reg_write(UC_ARM_REG_SP, STACK)
+    e.uc.reg_write(UC_ARM_REG_LR, RET | 1)
+    e.uc.emu_start(0x080B8898 | 1, 0x080B88F8)            # up to where it keeps "is a modulation target" in r3
+    got = e.uc.reg_read(__import__("unicorn").arm_const.UC_ARM_REG_R3)
+    check(f"focused {hex(pid)}: modulation button {'opens' if want else 'stays off'} (real FUN_080b8898)", got == want, got)
 
 # --- tab press range, Main tables
 check("tab press: ids 0x12f..0x134 accepted (cmp r3,#5)", e.r16(0x080B9496) == 0x2B05)

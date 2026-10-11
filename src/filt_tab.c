@@ -89,7 +89,7 @@ void filt_tabs(uint8_t *bar, uint8_t *slot4, unsigned index)
 
 /* The Filt page: knob grid, two rows of four */
 static const uint16_t filt_ids[8] = {
-    P_FILTER, 0x11 /* Res */, P_FTYPE, P_FDEPTH,
+    P_FILTER, 0x11 /* Res */, P_FMORPH, P_FDEPTH,
     P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE,
 };
 
@@ -155,3 +155,13 @@ void filt_knob_text(uint8_t *cell, int flag)
     fw_knob_text(cell, flag);
     *value = v;
 }
+
+/*
+ * Parameters a pad's modulation can target (stock: 28 ids at 0x080f12bc, read by FUN_080b8898 to let the modulation
+ * button open on the focused knob, and by FUN_080b892c to mark knobs and list rows): the stock list plus Morph.
+ */
+const uint16_t filt_mod_targets[29] = {
+    0x04, 0x62, 0x5c, 0x8f, 0x90, 0x91, 0x92, 0x4e, 0xa2, 0xc8, 0x11, 0x33, 0x32, 0x38,
+    0x37, 0x3a, 0x5d, 0x0b, 0x09, 0x0a, 0x3c, 0x3e, 0x40, 0x32, 0x33, 0x38, 0x37, 0x3a,
+    P_FMORPH,
+};

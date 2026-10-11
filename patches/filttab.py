@@ -3,7 +3,7 @@
 import os
 import struct
 
-from thumb import ROOT, bl, symbols
+from thumb import ROOT, bl, symbols, word
 
 sym = symbols(os.path.join(ROOT, "out", "cave.elf"))
 
@@ -79,6 +79,12 @@ PATCHES = [
     hook(0x080A957E, 0x080A9120, "filt_knob_text"),
     hook(0x080A965E, 0x080A9120, "filt_knob_text"),
     hook(0x080A9704, 0x080A9120, "filt_knob_text"),
+    # modulation targets: the stock 28-id list (0x080f12bc) -> 29 ids with Morph, at both literals and both counts
+    (0x080B8924, word(0x080F12BC), word(sym["filt_mod_targets"])),
+    (0x080B8BF8, word(0x080F12BC), word(sym["filt_mod_targets"])),
+    (0x080B88D6, bytes.fromhex("03f13801"), bytes.fromhex("03f13a01")),   # add.w r1, r3, #56 -> #58 (list end)
+    (0x080B896A, bytes.fromhex("1c22"), bytes.fromhex("1d22")),           # movs r2, #28 -> #29 (list rows)
+    (0x080B8980, bytes.fromhex("1c22"), bytes.fromhex("1d22")),           # movs r2, #28 -> #29 (knob grid)
     # Main tab: Filter and Res move to Filt; Level, Pitch, Pan, Saturation on top, the amp envelope stays on the bottom row
     *[(a, MAIN_OLD, MAIN_NEW) for a in MAIN_TABLES],
 ]

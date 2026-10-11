@@ -1,5 +1,5 @@
 /*
- * Filter Type and filter envelope: the pad parameters. Original 1010music Blackbox, firmware 3.1.9.
+ * Filter Morph and filter envelope: the pad parameters. Original 1010music Blackbox, firmware 3.1.9.
  * The sound side is in filter.c; this registers the new pad parameters (and glide.c's two) and gives every pad record
  * their defaults.
  *
@@ -28,13 +28,17 @@ typedef void (*store_add_fn)(void *store, int param, int value);
 
 void glide_register(void *table);   /* glide.c: Glide and Glide Time, registered with the filter parameters */
 
+/* 3.1.9-syn's filter Type, kept registered (hidden: on no page) so its presets still load it; filter.c turns HP into
+   Morph 100 (and BP, which Morph no longer has, into 50: the notch) the first time it reads the pad, and sets Type
+   back to LP. */
 const char *const fenv_type_names[3] = {"LP", "HP", "BP"};
 
 /* Replaces the Filter registration (bl @0x0808d59c): Filter as stock, then the new parameters. */
 void fenv_register(void *table, int param, int type, const char *label, int min, int max, const char *xml)
 {
     fw_register_num(table, param, type, label, min, max, xml);
-    fw_register_list(table, P_FTYPE, "Type:", fenv_type_names, 3, "fenvtype");
+    fw_register_list(table, P_FTYPE, "Type:", fenv_type_names, 3, "fenvtype");     /* 3.1.9-syn presets, not shown */
+    fw_register_num(table, P_FMORPH, TYPE_UNIPOLAR, "Morph:", 0, 1000, "fenvmorph");   /* LP 0, notch 50, HP 100 */
     fw_register_num(table, P_FATTACK, TYPE_UNIPOLAR, "Attack:", 0, 1000, "fenvattack");
     fw_register_num(table, P_FDECAY, TYPE_UNIPOLAR, "Decay:", 0, 1000, "fenvdecay");
     fw_register_num(table, P_FSUSTAIN, TYPE_UNIPOLAR, "Sustain:", 0, 1000, "fenvsus");
@@ -50,6 +54,7 @@ void fenv_defaults(void *store, int param, int value)
     (void)value;
     fw_store_add(store, param, DEF_FILTER);
     fw_store_add(store, P_FTYPE, DEF_FTYPE);
+    fw_store_add(store, P_FMORPH, DEF_FMORPH);
     fw_store_add(store, P_FATTACK, DEF_FATTACK);
     fw_store_add(store, P_FDECAY, DEF_FDECAY);
     fw_store_add(store, P_FSUSTAIN, DEF_FSUSTAIN);

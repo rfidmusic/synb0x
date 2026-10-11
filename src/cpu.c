@@ -4,7 +4,7 @@
  * The audio task (FUN_08041470) waits on a queue for the SAI DMA half / full interrupts, then renders 256 frames
  * (5.33 ms at 48 kHz) and waits again. This wraps that wait: busy = cycles from waking to waiting again,
  * period = cycles between wake-ups, both from the Cortex-M7 DWT cycle counter. Once a second the version label(s)
- * that show the version ("3.1.s") get " avg/peak%" appended, the average and the worst 5.33 ms block of the last second, and so
+ * that show the version ("3.1.t") get " avg/peak%" appended, the average and the worst 5.33 ms block of the last second, and so
  * does the global cell's name (FUN_0809ad74, address 0x40), which is where the version actually shows on screen.
  * If the cycle counter never moves, the text reads " --%" instead, so a dead counter is visible, not silent.
  * The labels are filled in when their screens are built; the meter rewrites their text from the audio task (a plain
@@ -25,7 +25,7 @@ typedef void (*label_fn)(uint8_t *label, const char *s);
 
 /* The firmware version the screens show. patches/cave.py points the four stock references to the stock "3.1.9" (literal
    pool words @0x0809af30, 0x080aeaf4, 0x080c55e8, 0x080c72c8) here, so the name is not limited by the stock slot. */
-const char mod_version[] = "3.1.s";
+const char mod_version[] = "3.1.t";
 #define VERSION     mod_version
 #define TEXT_CHARS  0x31                             /* text object: characters */
 #define LABEL_TEXT  0x34                             /* label -> its text object */

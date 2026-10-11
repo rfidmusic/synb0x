@@ -1,4 +1,4 @@
-"""Turn a built image into a release patch: python3 make_patch.py out/<patchsets>/BLACKBOX.bin 3.1.s
+"""Turn a built image into a release patch: python3 make_patch.py out/<patchsets>/BLACKBOX.bin 3.1.t
 
 Writes docs/blackbox-mod-<version>.json. The patch holds only the bytes this project adds or changes (new bytes and
 their offsets). It contains no bytes of the stock firmware; the stock image is identified by SHA-256 only.
