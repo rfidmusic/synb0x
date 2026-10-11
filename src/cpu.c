@@ -4,7 +4,7 @@
  * The audio task (FUN_08041470) waits on a queue for the SAI DMA half / full interrupts, then renders 256 frames
  * (5.33 ms at 48 kHz) and waits again. This wraps that wait: busy = cycles from waking to waiting again,
  * period = cycles between wake-ups, both from the Cortex-M7 DWT cycle counter. Once a second the version label(s)
- * that show "3.1.x" get " avg/peak%" appended, the average and the worst 5.33 ms block of the last second, and so
+ * that show the version ("3.1.9-syn") get " avg/peak%" appended, the average and the worst 5.33 ms block of the last second, and so
  * does the global cell's name (FUN_0809ad74, address 0x40), which is where the version actually shows on screen.
  * If the cycle counter never moves, the text reads " --%" instead, so a dead counter is visible, not silent.
  * The labels are filled in when their screens are built; the meter rewrites their text from the audio task (a plain
@@ -23,7 +23,10 @@ typedef void (*label_fn)(uint8_t *label, const char *s);
 #define fw_text_set ((text_fn)FN(0x080c3b98))        /* text object: copy string (<= 31 chars), mark dirty */
 #define fw_label_set ((label_fn)FN(0x080a3dec))      /* label: text object at +0x34, then redraw */
 
-#define VERSION     ((const char *)0x080cf290u)      /* "3.1.x" */
+/* The firmware version the screens show. patches/cave.py points the four stock references to the stock "3.1.9" (literal
+   pool words @0x0809af30, 0x080aeaf4, 0x080c55e8, 0x080c72c8) here; the stock slot only has room for 7 characters. */
+const char mod_version[] = "3.1.9-syn";
+#define VERSION     mod_version
 #define TEXT_CHARS  0x31                             /* text object: characters */
 #define LABEL_TEXT  0x34                             /* label -> its text object */
 #define LABELS      3
@@ -77,11 +80,13 @@ static char *put_uint(char *p, unsigned v)
     return p;
 }
 
-/* "3.1.x 34/71%", "3.1.x --%", or just the version before the first second. Writes at most 16 bytes. */
+/* "3.1.9-syn 34/71%", "3.1.9-syn --%", or just the version before the first second. Writes at most 25 bytes
+   (16 of version, " 100/100%", NUL); every destination has room: report()'s buffer 32, text objects 31 characters,
+   the global cell's name 64. */
 static void compose(char *buf)
 {
     char *p = buf;
-    for (const char *v = VERSION; *v && p < buf + 8; v++)
+    for (const char *v = VERSION; *v && p < buf + 16; v++)
         *p++ = *v;
     if (M->magic == MAGIC && M->status == STATUS_OK) {
         *p++ = ' ';
@@ -100,7 +105,7 @@ static void compose(char *buf)
 
 static void report(void)
 {
-    char buf[24];
+    char buf[32];
     compose(buf);
     for (int i = 0; i < LABELS; i++) {
         uint8_t *t = M->text[i];

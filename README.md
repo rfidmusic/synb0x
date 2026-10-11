@@ -10,7 +10,7 @@ An unofficial feature mod for the **original 1010music Blackbox** (not the Black
 **Get new builds by email:** sign up at <https://justinjoe.com/blackbox-mod> and I'll send a note when a new build is
 out (new FX, fixes). That's all the list is for.
 
-## What it adds (build 3.1.J, `filter-env` branch)
+## What it adds (version 3.1.9-syn, `filter-env` branch)
 
 - **Solo** in the mixer: MIX cycles Mixer → Mute → Solo. Tap pads to solo them (yellow).
 - **Slicer knobs**: on the waveform screen, bottom-left = slice Start, bottom-right = slice End, top-right = Zoom.
@@ -52,7 +52,7 @@ out (new FX, fixes). That's all the list is for.
 3. Keep the stock `BLACKBOX.bin` somewhere safe. That file is your way back.
 4. Copy the patched `BLACKBOX.bin` to the root of the Blackbox's microSD card and install it the way you install
    any 1010music firmware update (hold BACK + INFO while powering on).
-5. TOOLS should show version `3.1.n`.
+5. TOOLS should show version `3.1.n` (`3.1.9-syn` for a build of the `filter-env` branch).
 
 **To go back to stock:** put the stock `BLACKBOX.bin` on the card and install it the same way.
 

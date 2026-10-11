@@ -10,7 +10,7 @@ import sys
 from emu import Emu
 
 e = Emu("out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
-V = e.cstr(0x080CF290)                          # "3.1.x" of this build
+V = e.cstr(e.sym["mod_version"])                # the version this build shows
 e.uc.mem_map(0xE0000000, 0x100000)
 CYC, STATE = 0xE0001004, 0x2405FFD0
 TEXT = [0x24060000, 0x24061000, 0x24062000]
@@ -47,9 +47,9 @@ def labels(init=None):
     for t in TEXT:
         e.uc.mem_write(t, bytes(0x60))
         e.uc.mem_write(t + 0x31, init.encode() + b"\0")
-    e.call("cpu_label_a", TEXT[0] - 0x34, 0x080CF290)
-    e.call("cpu_text_b", TEXT[1], 0x080CF290)
-    e.call("cpu_text_c", TEXT[2], 0x080CF290)
+    e.call("cpu_label_a", TEXT[0] - 0x34, e.sym["mod_version"])
+    e.call("cpu_text_b", TEXT[1], e.sym["mod_version"])
+    e.call("cpu_text_c", TEXT[2], e.sym["mod_version"])
 
 
 fails = 0
@@ -130,6 +130,16 @@ check("cycle counter dead: shows '--%' instead of nothing", e.cstr(INFO) == V + 
 e.uc.mem_write(STATE, b"\xa5" * 36)
 e.call(0x0809AD74, APP, ADDR, INFO)
 check("before anything is measured: just the version", e.cstr(INFO) == V, e.cstr(INFO))
+
+# --- the version: 3.1.9-syn everywhere the stock "3.1.9" was referenced, never cut short by the meter
+check("version string is 3.1.9-syn", V == "3.1.9-syn", V)
+lits = [e.r32(a) & 0xFFFFFFFF for a in (0x0809AF30, 0x080AEAF4, 0x080C55E8, 0x080C72C8)]
+check("all four stock references point at it", lits == [e.sym["mod_version"]] * 4, [hex(x) for x in lits])
+check("the meter's labels keep the whole version", all(text(i).startswith("3.1.9-syn ") for i in (0, 1)), [text(i) for i in range(3)])
+NAME = 0x24070800
+e.uc.mem_write(NAME, bytes(64))
+e.call("cpu_name", NAME)
+check("the global name (where the version shows) keeps it too", e.cstr(NAME).startswith("3.1.9-syn"), e.cstr(NAME))
 
 print(f"\n{fails} failure(s)")
 sys.exit(1 if fails else 0)
