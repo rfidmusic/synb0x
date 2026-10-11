@@ -169,6 +169,32 @@ for mode in (-1, 0, 1, 2, 3, 4):
 check("clamp: identical to stock except Filt (0x1d) kept for pad modes 0..3",
       sorted(diff) == sorted((m, "0x1d", "0x1d", "0x18") for m in (0, 1, 2, 3)), diff)
 
+# --- the Filter knob's number: 0..100 %, display only, through the real knob-cell formatter
+CELL = 0x24048000
+shown = []
+e.stub(0x080C3B98, lambda: shown.append(e.cstr(e.arg(1))))
+
+
+def knob_text(pid, ptype, value):
+    e.uc.mem_write(CELL, bytes(0x400))
+    e.uc.mem_write(CELL + 0x94, struct.pack("<HBB", pid, ptype, 0))
+    e.w32(CELL + 0x98, value)
+    e.uc.mem_write(CELL + 0x3C8, b"\x01\x00")          # the cell shows its value
+    shown.clear()
+    e.call("filt_knob_text", CELL, 1)
+    return shown[-1] if shown else None, e.r32(CELL + 0x98)
+
+
+cases = {-1000: "0.0%", -500: "25.0%", 0: "50.0%", 500: "75.0%", 1000: "100.0%"}
+got = {v: knob_text(200, 9, v) for v in cases}
+check("Filter knob shows 0.0% .. 100.0% (far left .. far right)", {v: t for v, (t, _) in got.items()} == cases, got)
+check("Filter's stored value is unchanged after drawing", all(back == v for v, (_, back) in got.items()), got)
+check("other bipolar knobs still show -100..100 (Pan -50.0%, Depth -30.0%)",
+      knob_text(0x62, 9, -500)[0] == "-50.0%" and knob_text(0x1E6, 9, -300)[0] == "-30.0%",
+      (knob_text(0x62, 9, -500), knob_text(0x1E6, 9, -300)))
+check("knob-cell formatter calls go through the wrapper (3 sites)",
+      all(e.r16(a) != stock.r16(a) for a in (0x080A957E, 0x080A965E, 0x080A9704)))
+
 # --- tab press range, Main tables
 check("tab press: ids 0x12f..0x134 accepted (cmp r3,#5)", e.r16(0x080B9496) == 0x2B05)
 mains = [struct.unpack("<8H", e.uc.mem_read(a, 16)) for a in

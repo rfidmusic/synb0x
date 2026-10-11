@@ -133,3 +133,25 @@ int filt_clamp(void *app, int state, const uint8_t *ref)
         return state < 0x18 ? 0x18 : state;
     return state == 0x1c ? state : 0x18;
 }
+
+/*
+ * The Filter knob reads 0..100 % (far left 0, far right 100) instead of -100..100: display only. The stored value, the
+ * preset value and the knob's travel stay -1000..1000. Knob cells (FUN_080a9120, called @0x080a957e, 0x080a965e,
+ * 0x080a9704) keep the parameter id at +0x94, the display type at +0x96 and the value at +0x98; for Filter (type 9,
+ * shown value / 10 with one decimal and %) the value is handed over as (value + 1000) / 2 and put back afterwards.
+ */
+typedef void (*knob_text_fn)(uint8_t *cell, int flag);
+#define fw_knob_text ((knob_text_fn)FN(0x080a9120))
+
+void filt_knob_text(uint8_t *cell, int flag)
+{
+    if (*(const uint16_t *)(cell + 0x94) != P_FILTER || cell[0x96] != 9) {
+        fw_knob_text(cell, flag);
+        return;
+    }
+    int32_t *value = (int32_t *)(cell + 0x98), v = *value;
+    int shown = (v + 1000) / 2;
+    *value = shown < 0 ? 0 : shown > 1000 ? 1000 : shown;
+    fw_knob_text(cell, flag);
+    *value = v;
+}

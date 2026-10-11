@@ -75,6 +75,10 @@ PATCHES = [
      bl(0x080B88A6, sym["filt_is_list_r2"]) + b16(0x080B88AA, 0x080B88EA, NE) + NOP),
     # re-entry clamp: the whole function -> filt_clamp (same arguments, returns to the caller)
     (0x080991A8, H("938803f4"), bw(0x080991A8, sym["filt_clamp"])),
+    # the Filter knob's number reads 0..100 % (display only; the value stays -1000..1000)
+    hook(0x080A957E, 0x080A9120, "filt_knob_text"),
+    hook(0x080A965E, 0x080A9120, "filt_knob_text"),
+    hook(0x080A9704, 0x080A9120, "filt_knob_text"),
     # Main tab: Filter and Res move to Filt; Level, Pitch, Pan, Saturation on top, the amp envelope stays on the bottom row
     *[(a, MAIN_OLD, MAIN_NEW) for a in MAIN_TABLES],
 ]

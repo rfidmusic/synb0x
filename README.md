@@ -17,7 +17,8 @@ out (new FX, fixes). That's all the list is for.
 - **Fidelity** (was Interp): sample-rate crunch plus machine modes SP1200, SP-12, S950, MPC60 and SP Raw, with
   drop-sample pitching. Machine modes work on Sample and Multisample pads.
 - **Filter**: 24 dB/oct state-variable filter; drive comes in as Res goes past noon. **Type** picks LP, HP or BP, and
-  the Filter knob is cutoff across its whole travel (far left 20 Hz, far right 20.5 kHz; new pads start fully open).
+  the Filter knob is cutoff across its whole travel (far left 20 Hz, far right 20.5 kHz; new pads start fully open). It
+  reads 0-100 %; the stored value is still -1000..1000, so presets are unaffected by the display.
   Presets saved before this build keep their Filter value, so a pad saved with the knob at centre (stock: filter off)
   now loads as a low-pass at 640 Hz.
 - **Filter envelope**: per pad, per voice: Attack, Decay, Sustain, Release (0 ms to 60 s on a 0-100 curve like the amp
