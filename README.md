@@ -10,7 +10,7 @@ An unofficial feature mod for the **original 1010music Blackbox** (not the Black
 **Get new builds by email:** sign up at <https://justinjoe.com/blackbox-mod> and I'll send a note when a new build is
 out (new FX, fixes). That's all the list is for.
 
-## What it adds (build 3.1.H, `filter-env` branch)
+## What it adds (build 3.1.I, `filter-env` branch)
 
 - **Solo** in the mixer: MIX cycles Mixer → Mute → Solo. Tap pads to solo them (yellow).
 - **Slicer knobs**: on the waveform screen, bottom-left = slice Start, bottom-right = slice End, top-right = Zoom.

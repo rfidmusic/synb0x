@@ -200,43 +200,66 @@ static inline __attribute__((always_inline)) float soft(float x, float inv_t, fl
  * driven. Band-pass is normalised (r * bp: unity at the centre), so Res narrows it without making it louder.
  */
 enum { TYPE_LP, TYPE_HP, TYPE_BP, TYPES };
-#define SVF_LOOP(OUT, NEXT_S1)                                                                                     \
+#define OUT_LP(hp, bp, lp, r) (lp)
+#define OUT_HP(hp, bp, lp, r) (hp)
+#define OUT_BP(hp, bp, lp, r) ((r) * (bp))
+
+/*
+ * Both stages in one pass per sample (and, while Res drives, the input soft clip too), so each sample is loaded and
+ * stored once instead of three times. Stage 1: fixed Butterworth damping, linear. Stage 2: the Res damping, its
+ * band-pass integrator soft-limited while driven. Same arithmetic as running the stages one after the other.
+ * DRIVEN is a compile-time 0 / 1, so each variant is its own tight loop.
+ */
+#define SVF2_LOOP(OUT, DRIVEN)                                                                                     \
     for (int i = 0; i < n; i++) {                                                                                  \
-        float hp = (x[i] - rg * s1 - s2) * h;                                                                      \
-        float bp = g * hp + s1;                                                                                    \
-        s1 = NEXT_S1;                                                                                              \
-        float lp = g * bp + s2;                                                                                    \
-        s2 = g * bp + lp;                                                                                          \
-        x[i] = OUT;                                                                                                \
+        float v = x[i];                                                                                            \
+        if (DRIVEN)                                                                                                \
+            v = soft(v * pre, 1.0f, 1.0f);                                                                         \
+        float hp = (v - rg1 * a1 - a2) * h1;                                                                       \
+        float bp = g * hp + a1;                                                                                    \
+        a1 = g * hp + bp;                                                                                          \
+        float lp = g * bp + a2;                                                                                    \
+        a2 = g * bp + lp;                                                                                          \
+        v = OUT(hp, bp, lp, R_BUTTERWORTH);                                                                        \
+        hp = (v - rg2 * b1 - b2) * h2;                                                                             \
+        bp = g * hp + b1;                                                                                          \
+        b1 = DRIVEN ? soft(g * hp + bp, inv, limit) : g * hp + bp;                                                 \
+        lp = g * bp + b2;                                                                                          \
+        b2 = g * bp + lp;                                                                                          \
+        x[i] = OUT(hp, bp, lp, r);                                                                                 \
     }
 
-static void svf(float *x, int n, float g, float r, float *s1p, float *s2p, int type, float limit)
+/* s = {stage 1 s1, stage 1 s2, stage 2 s1, stage 2 s2} for this channel. drive 0 = clean. */
+static void svf2(float *x, int n, float g, float r, float *s[4], int type, float drive)
 {
-    float h = 1.0f / (1.0f + r * g + g * g), rg = r + g, s1 = *s1p, s2 = *s2p;
-    if (limit > 0.0f) {
-        float inv = 1.0f / limit;
+    float h1 = 1.0f / (1.0f + R_BUTTERWORTH * g + g * g), rg1 = R_BUTTERWORTH + g;
+    float h2 = 1.0f / (1.0f + r * g + g * g), rg2 = r + g;
+    float a1 = *s[0], a2 = *s[1], b1 = *s[2], b2 = *s[3];
+    if (drive > 0.001f) {
+        float pre = 1.0f + 3.0f * drive;
+        float limit = 4.0f - 3.0f * drive, inv = 1.0f / limit;  /* resonant stage ceiling, 4 down to 1 */
         if (type == TYPE_HP)
-            SVF_LOOP(hp, soft(g * hp + bp, inv, limit))
+            SVF2_LOOP(OUT_HP, 1)
         else if (type == TYPE_BP)
-            SVF_LOOP(r * bp, soft(g * hp + bp, inv, limit))
+            SVF2_LOOP(OUT_BP, 1)
         else
-            SVF_LOOP(lp, soft(g * hp + bp, inv, limit))
-    } else if (type == TYPE_HP) {
-        SVF_LOOP(hp, g * hp + bp)
-    } else if (type == TYPE_BP) {
-        SVF_LOOP(r * bp, g * hp + bp)
+            SVF2_LOOP(OUT_LP, 1)
     } else {
-        SVF_LOOP(lp, g * hp + bp)
+        float pre = 1.0f, limit = 1.0f, inv = 1.0f;
+        (void)pre;
+        (void)limit;
+        (void)inv;
+        if (type == TYPE_HP)
+            SVF2_LOOP(OUT_HP, 0)
+        else if (type == TYPE_BP)
+            SVF2_LOOP(OUT_BP, 0)
+        else
+            SVF2_LOOP(OUT_LP, 0)
     }
-    *s1p = s1;
-    *s2p = s2;
-}
-
-static void drive_in(float *x, int n, float amount)
-{
-    float pre = 1.0f + 3.0f * amount;
-    for (int i = 0; i < n; i++)
-        x[i] = soft(x[i] * pre, 1.0f, 1.0f);
+    *s[0] = a1;
+    *s[1] = a2;
+    *s[2] = b1;
+    *s[3] = b2;
 }
 
 /*
@@ -244,13 +267,33 @@ static void drive_in(float *x, int n, float amount)
  * the engine's copy: the engine's pad reset (FUN_080596b0, the block that zeroes +0x550..+0x582) sets its copy back to
  * Normal, which in 3.1.d-f made the crunch drop out a moment after each change.
  * Engine pad id (pad +0x18) = bank << 16 | row << 8 | col; app pad record = app + 0x1840 + row * 0xf0 + col * 0x30
- * (FUN_08098d0c), searched with the stock store lookup FUN_08093e9c.
+ * (FUN_08098d0c), read directly with cached positions (below) rather than the stock lookup FUN_08093e9c, which scans.
  */
-typedef int (*setting_fn)(const void *store, unsigned param);
-#define fw_setting ((setting_fn)FN(0x08093e9c))
 #define APP_PADS   (0x24020088u + 0x1840u)
 
-static unsigned pad_setting(const uint8_t *pad, unsigned param)
+
+/* Settings stores: 8-byte entries {u16 id, pad, i32 value}, array at store + 4, count at store + 10 */
+#define STORE_ENTRIES(store) (*(const uint8_t *const *)((const uint8_t *)(store) + 4))
+#define STORE_COUNT(store)   (*(const uint16_t *)((const uint8_t *)(store) + 10))
+#define ENTRY_ID(e, i)       (*(const uint16_t *)((e) + 8 * (i)))
+#define ENTRY_VALUE(e, i)    (*(const int32_t *)((e) + 8 * (i) + 4))
+#define ABSENT 0xff
+
+/*
+ * Fidelity (0xf1) is read up to three times per voice per block (filter, overdrive, reader), so each pad keeps where
+ * in its record the entry sits: patch RAM 0x2405ff70..0x2405ff9b (the gap above the heap, free since the ducker went).
+ * A cached position is used only if the entry there still has the id; otherwise the record is scanned again.
+ */
+struct interp_cache {
+    uint32_t magic;
+    uint8_t idx[20];
+    uint8_t count[20];
+};
+#define IC     ((volatile struct interp_cache *)0x2405ff70u)
+_Static_assert(sizeof(struct interp_cache) <= 0x30, "must end before slice.c's byte at 0x2405ffa0");
+#define IMAGIC 0x49445831u       /* "IDX1" */
+
+static unsigned pad_interp(const uint8_t *pad)
 {
     if (!pad)
         return 0;
@@ -258,12 +301,24 @@ static unsigned pad_setting(const uint8_t *pad, unsigned param)
     unsigned row = (id >> 8) & 0xff, col = id & 0xff;
     if (row >= 4 || col >= 5)
         return 0;
-    return (unsigned)fw_setting((const void *)(APP_PADS + row * 0xf0u + col * 0x30u), param);
-}
-
-static unsigned pad_interp(const uint8_t *pad)
-{
-    return pad_setting(pad, 0xf1);
+    const void *store = (const void *)(APP_PADS + row * 0xf0u + col * 0x30u);
+    const uint8_t *e = STORE_ENTRIES(store);
+    unsigned count = STORE_COUNT(store), slot = row * 5 + col;
+    if (!e)
+        return 0;
+    if (IC->magic != IMAGIC) {
+        for (unsigned i = 0; i < 20; i++)
+            IC->idx[i] = ABSENT;
+        IC->magic = IMAGIC;
+    }
+    unsigned k = IC->idx[slot];
+    if (k != ABSENT && k < count && IC->count[slot] == (uint8_t)count && ENTRY_ID(e, k) == 0xf1)
+        return (unsigned)ENTRY_VALUE(e, k);
+    for (k = 0; k < count && ENTRY_ID(e, k) != 0xf1; k++)
+        ;
+    IC->idx[slot] = k < count ? (uint8_t)k : ABSENT;
+    IC->count[slot] = (uint8_t)count;
+    return k < count ? (unsigned)ENTRY_VALUE(e, k) : 0;
 }
 
 /* For od.c: this pad is in a machine mode, so its Saturation knob is the machine's input drive (applied here). */
@@ -310,29 +365,60 @@ static float seg_time(int v)                       /* knob 0..1000 -> 60 x^3 sec
     return 60.0f * x * x * x;
 }
 
-static void pad_config(const uint8_t *pad, struct pad_cfg *c)
+/*
+ * The filter's settings come from the pad record every block for every voice. Each voice keeps where its pad's entries
+ * sit in the filter object at +0x74..+0x83 (only the replaced stock process used it): store, count and one position per
+ * setting. Positions are checked against the entry id on every read; a different store, a different count or a
+ * mismatch rescans. Settings the record does not have (a record from before this build) keep their defaults.
+ */
+static const uint16_t cfg_ids[8] = {0xf1, 0xdb, P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH};
+struct cfg_cache {
+    const uint8_t *entries;
+    uint16_t count;
+    uint8_t idx[8];
+    uint16_t magic;
+};
+#define CFG_CACHE(obj) ((struct cfg_cache *)((obj) + 0x74))
+#define CMAGIC 0x4346u           /* "CF" */
+_Static_assert(sizeof(struct cfg_cache) == 16, "the cache must fit +0x74..+0x83");
+
+static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
 {
-    int v[7] = {0, 0, DEF_FTYPE, DEF_FATTACK, DEF_FDECAY, DEF_FSUSTAIN, DEF_FRELEASE};
-    int depth = DEF_FDEPTH;
+    int v[8] = {0, 0, DEF_FTYPE, DEF_FATTACK, DEF_FDECAY, DEF_FSUSTAIN, DEF_FRELEASE, DEF_FDEPTH};
     if (pad) {
         uint32_t id = *(const uint32_t *)(pad + 0x18);
         unsigned row = (id >> 8) & 0xff, col = id & 0xff;
         if (row < 4 && col < 5) {
-            const uint8_t *store = (const uint8_t *)(APP_PADS + row * 0xf0u + col * 0x30u);
-            const uint8_t *e = *(const uint8_t *const *)(store + 4);
-            unsigned count = *(const uint16_t *)(store + 10);
-            for (unsigned i = 0; e && i < count; i++, e += 8) {
-                int value = *(const int32_t *)(e + 4);
-                switch (*(const uint16_t *)e) {
-                case 0xf1:       v[0] = value; break;
-                case 0xdb:       v[1] = value; break;
-                case P_FTYPE:    v[2] = value; break;
-                case P_FATTACK:  v[3] = value; break;
-                case P_FDECAY:   v[4] = value; break;
-                case P_FSUSTAIN: v[5] = value; break;
-                case P_FRELEASE: v[6] = value; break;
-                case P_FDEPTH:   depth = value; break;
+            const void *store = (const void *)(APP_PADS + row * 0xf0u + col * 0x30u);
+            const uint8_t *e = STORE_ENTRIES(store);
+            unsigned count = STORE_COUNT(store);
+            struct cfg_cache *cc = CFG_CACHE(obj);
+            int ok = e && cc->magic == CMAGIC && cc->entries == e && cc->count == count;
+            for (unsigned k = 0; ok && k < 8; k++) {
+                unsigned i = cc->idx[k];
+                if (i == ABSENT)
+                    continue;
+                if (i >= count || ENTRY_ID(e, i) != cfg_ids[k])
+                    ok = 0;
+                else
+                    v[k] = ENTRY_VALUE(e, i);
+            }
+            if (!ok && e) {
+                for (unsigned k = 0; k < 8; k++)
+                    cc->idx[k] = ABSENT;
+                for (unsigned i = 0; i < count; i++) {
+                    unsigned eid = ENTRY_ID(e, i);
+                    if (eid != 0xf1 && eid != 0xdb && eid - P_FTYPE > P_FDEPTH - P_FTYPE)
+                        continue;                       /* not one of ours: most of the record */
+                    for (unsigned k = 0; k < 8; k++)
+                        if (eid == cfg_ids[k]) {
+                            cc->idx[k] = (uint8_t)i;
+                            v[k] = ENTRY_VALUE(e, i);
+                        }
                 }
+                cc->entries = e;
+                cc->count = (uint16_t)count;
+                cc->magic = CMAGIC;
             }
         }
     }
@@ -343,7 +429,7 @@ static void pad_config(const uint8_t *pad, struct pad_cfg *c)
     c->decay = seg_time(v[4]);
     c->sustain = v[5] < 0 ? 0.0f : v[5] > 1000 ? 1.0f : (float)v[5] * 0.001f;
     c->release = seg_time(v[6]);
-    c->depth = depth < -1000 ? -1.0f : depth > 1000 ? 1.0f : (float)depth * 0.001f;
+    c->depth = v[7] < -1000 ? -1.0f : v[7] > 1000 ? 1.0f : (float)v[7] * 0.001f;
 }
 
 /*
@@ -470,7 +556,7 @@ void glide_advance(uint8_t *filter_obj, int frames);
 void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *amp)
 {
     struct pad_cfg cfg;
-    pad_config(pad, &cfg);
+    pad_config(pad, obj, &cfg);
 
     /* the envelope runs for every block, silent or not, so FENV keeps moving for the other destinations */
     struct envstate *env = ENV(obj);
@@ -482,10 +568,20 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
         if (n > SUB * MAX_SUBS)
             sub = (n + MAX_SUBS - 1) / MAX_SUBS;
         subs = (n + sub - 1) / sub;
-        for (int k = 0; k < subs; k++) {
-            int len = k == subs - 1 ? n - k * sub : sub;
-            env_step(env, amp ? *amp : 0, &cfg, (float)len * (1.0f / FS));
-            levels[k] = env->level;
+        unsigned a = amp ? *amp : 0;
+        int gate = a >= 1 && a <= 3;
+        if (((env->stage == ENV_IDLE || env->stage == ENV_DONE) && !gate) ||
+            (env->stage == ENV_SUSTAIN && gate && a != 1)) {
+            /* not moving (at rest, or holding Sustain): one step for the whole block gives the same levels */
+            env_step(env, a, &cfg, (float)n * (1.0f / FS));
+            for (int k = 0; k < subs; k++)
+                levels[k] = env->level;
+        } else {
+            for (int k = 0; k < subs; k++) {
+                int len = k == subs - 1 ? n - k * sub : sub;
+                env_step(env, a, &cfg, (float)len * (1.0f / FS));
+                levels[k] = env->level;
+            }
         }
     }
 
@@ -559,12 +655,6 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     }
     /* knob changes glide like the stock per-block smoothing (1/3 per block), spread over the steps */
     float glide = 1.0f - exp2f_fast(-0.585f * (float)sub / 256.0f);      /* (2/3)^(sub/256) */
-    /* resonant stage ceiling: off below noon (clean, linear), from 4 down to 1 as drive rises */
-    float limit = st->drive > 0.001f ? 4.0f - 3.0f * st->drive : 0.0f;
-    if (st->drive > 0.001f)
-        for (int c = 0; c < 2; c++)
-            if (ch[c])
-                drive_in(ch[c], n, st->drive);
     for (int k = 0; k < subs; k++) {
         int at = k * sub, len = k == subs - 1 ? n - at : sub;
         env->base += glide * (pos - env->base);
@@ -580,8 +670,8 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
         for (int c = 0; c < 2; c++) {
             if (!ch[c])
                 continue;
-            svf(ch[c] + at, len, g, R_BUTTERWORTH, &st->s1[0][c], &st->s2[0][c], type, 0.0f);
-            svf(ch[c] + at, len, g, st->r, &st->s1[1][c], &st->s2[1][c], type, limit);
+            float *sv[4] = {&st->s1[0][c], &st->s2[0][c], &st->s1[1][c], &st->s2[1][c]};
+            svf2(ch[c] + at, len, g, st->r, sv, type, st->drive);
         }
     }
 }

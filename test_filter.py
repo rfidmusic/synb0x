@@ -466,6 +466,48 @@ setup(-0.6, 0.3)
 run(sine(997))
 check("state from an older build (magic SVF1) is reinitialised, not reused", e.r32(OBJ + 4) == 0x53564632)
 
+# --- cached settings positions follow the record when it changes
+def record(entries, row=PAD_ROW, col=PAD_COL, at=None):
+    store = APP_PADS + row * 0xF0 + col * 0x30
+    arr = at or ARR + (row * 4 + col) * 0x80
+    e.uc.mem_write(arr, b"".join(struct.pack("<HHi", i, 0, v) for i, v in entries))
+    e.w32(store + 4, arr)
+    e.uc.mem_write(store + 10, struct.pack("<H", len(entries)))
+
+
+def is_crunched(l):
+    return len(set(l)) <= N // 4 + 1
+
+
+reset()
+values[PARAMS + 8] = 1.0
+e.w32(PAD + 0x18, PAD_ROW << 8 | PAD_COL)
+base = [(0x8B, 0), (0xDB, 0), (P_FTYPE, LP), (P_FDEPTH, 0)]
+record(base + [(0xF1, 0)])
+run(sine(997))
+l, _ = run(sine(997))
+check("cache: Interp Normal, filter skipped", not is_crunched(l))
+record(base + [(0xF1, 7 + 1)])                     # same layout, value changed (edit on the screen)
+l, _ = run(sine(997))
+check("cache: a changed value is read on the next block (12k crunch)", is_crunched(l))
+record([(0xF1, 7 + 1)] + base)                     # same count, entries moved
+l, _ = run(sine(997))
+check("cache: entries moved: found again", is_crunched(l))
+record(base + [(0xF1, 0), (0x99, 0)], at=0x24076000)   # another record (pad type changed): rescanned
+l, _ = run(sine(997))
+check("cache: a different record: rescanned (Normal again)", not is_crunched(l))
+record([(0x8B, 0), (0xDB, 0)])                     # the new settings gone: defaults
+values[PARAMS + 8] = 0.0
+l, _ = run(sine(5000))
+check("cache: settings missing from the record: defaults (LP at 640 Hz)", rms(l) < 0.3 * rms(sine(5000)))
+record(base + [(0xF1, 2)])                         # SP1200: a machine mode
+e.call("pad_machine_mode", PAD)
+m1 = e.uc.reg_read(__import__("unicorn").arm_const.UC_ARM_REG_R0)
+record([(0xF1, 0)] + base)
+e.call("pad_machine_mode", PAD)
+m0 = e.uc.reg_read(__import__("unicorn").arm_const.UC_ARM_REG_R0)
+check("Fidelity cache (overdrive / reader): follows a value change and a moved entry", (m1, m0) == (1, 0), (m1, m0))
+
 # --- call sites: both pass the pad from r6 and the voice's amp envelope stage
 reset()
 setup(1.0, interp=7 + 1, attack=300)
