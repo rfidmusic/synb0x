@@ -35,4 +35,5 @@ if os.path.abspath(out) == os.path.abspath(a.stock):
     raise SystemExit("Refusing to overwrite the stock file. Pick another output path and keep the stock one as backup.")
 os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
 open(out, "wb").write(data)
-print(f"wrote {out} ({len(data)} bytes) = blackbox-mod {p['version']}")
+print(f"wrote {out} ({len(data)} bytes) = {p['version']}")
+print(f"SHA-256 {hashlib.sha256(data).hexdigest()} (matches the release; see README / SHA256SUMS)")

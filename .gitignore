@@ -10,3 +10,4 @@ __pycache__/
 ghidra/*.rep/
 ghidra/*.gpr
 ghidra/out_*.c
+.DS_Store
