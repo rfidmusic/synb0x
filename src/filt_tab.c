@@ -33,6 +33,18 @@ typedef int (*setting_fn)(const void *store, unsigned param);
 #define fw_pad_store  ((pad_store_fn)FN(0x08098d0c))
 #define fw_setting    ((setting_fn)FN(0x08093e9c))
 
+/* A pad record's modulation routes: 12-byte entries, read one at a time by FUN_08094a30 */
+struct route {
+    uint32_t word0;
+    uint16_t source, dest;
+    int16_t slot;
+    uint16_t pad;
+};
+typedef int (*route_fn)(const void *store, unsigned index, struct route *out);
+typedef void (*list_route_fn)(void *list, unsigned dest, int slot, unsigned source);
+#define fw_route      ((route_fn)FN(0x08094a30))
+#define fw_list_route ((list_route_fn)FN(0x080a50c6))   /* mark the list entry of dest: slot has this source */
+
 #define TABS     6
 #define TAB_GRAN 3
 #define TAB_POS  1
@@ -82,7 +94,8 @@ static const uint16_t filt_ids[8] = {
 };
 
 /* Replaces the page-list calls (pad screen 0x080b8956 and the three other tabbed callers): tab 5 of a pad is the Filt
-   page, from the pad's own record; everything else is stock. */
+   page, from the pad's own record; everything else is stock. Like the stock pad pages, the list then gets the pad's
+   modulation routes (they light the knobs' modulation indicators) and the record's two trailing words. */
 int filt_page(void *app, const uint8_t *ref, void *list, int tab)
 {
     unsigned kind = *(const uint16_t *)(ref + 4);
@@ -92,6 +105,11 @@ int filt_page(void *app, const uint8_t *ref, void *list, int tab)
     const void *store = fw_pad_store(app, ref);
     for (unsigned i = 0; i < sizeof filt_ids / sizeof filt_ids[0]; i++)
         fw_list_add(list, filt_ids[i], fw_setting(store, filt_ids[i]));
+    struct route r = {0, 0, 0, 0, 0};
+    for (unsigned i = 0; fw_route(store, i, &r); i++)
+        fw_list_route(list, r.dest, r.slot, r.source);
+    *(uint32_t *)((uint8_t *)list + 0x248) = ((const uint32_t *)store)[8];
+    *(uint32_t *)((uint8_t *)list + 0x24c) = ((const uint32_t *)store)[9];
     return 1;
 }
 

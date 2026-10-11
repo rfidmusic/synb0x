@@ -79,6 +79,34 @@ e.call("filt_page", APP, REF, 0x24047000, 5)
 want = [("clear",)] + [("add", i, vals[i]) for i in (P_FILTER, P_RES, P_FTYPE, P_FDEPTH, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE)]
 check("Filt page: Filter, Res, Type, Depth / Attack, Decay, Sustain, Release, from the pad's record", calls == want, calls)
 check("Filt page reports filled (1)", e.uc.reg_read(UC_ARM_REG_R0) == 1)
+
+# the same page through the real list functions, with modulation routes in the record (they light the indicators)
+del e.stubs[0x080A4FC2], e.stubs[0x080A5038]
+LIST = 0x24047000
+store = APP + 0x1840 + 2 * 0xF0 + 1 * 0x30
+ROUTES = 0x24057000
+routes = [(0x0D, 200, 0), (0x04, 0x11, 2), (0x01, 200, 1), (0x0D, 0x5C, 0)]      # VEL->Filter, LFO->Res, FENV->Filter, VEL->Pitch
+e.uc.mem_write(ROUTES, b"".join(struct.pack("<IHHhH", 0, src, dest, slot, 0) for src, dest, slot in routes))
+e.w32(store + 0x10, ROUTES)
+e.uc.mem_write(store + 0x14, struct.pack("<H", len(routes)))
+e.w32(store + 0x20, 0xA1B2C3D4)
+e.w32(store + 0x24, 0x01020304)
+e.uc.mem_write(LIST, bytes(0x260))
+e.call("filt_page", APP, REF, LIST, 5)
+got = {}
+for i in range(e.r32(LIST)):
+    pid = e.r16(LIST + 4 + 12 * i)
+    got[pid] = tuple(e.r16(LIST + 12 * i + 6 + 2 * k) for k in range(3))   # sources in slots 0, 1, 2 (+6, +8, +10)
+check("Filt page, real list: Filter's slots carry VEL and FENV, Res's slot 2 carries LFO (modulation indicators)",
+      got.get(200) == (0x0D, 0x01, 0) and got.get(0x11) == (0, 0, 0x04), got)
+check("Filt page, real list: knobs without routes have none (Type, Attack)",
+      got.get(P_FTYPE) == (0, 0, 0) and got.get(P_FATTACK) == (0, 0, 0), (got.get(P_FTYPE), got.get(P_FATTACK)))
+check("Filt page, real list: the record's two trailing words copied (+0x248, +0x24c) as the stock pad pages do",
+      e.r32(LIST + 0x248) & 0xFFFFFFFF == 0xA1B2C3D4 and e.r32(LIST + 0x24C) == 0x01020304)
+e.w32(store + 0x10, 0)
+e.uc.mem_write(store + 0x14, struct.pack("<H", 0))
+e.stub(0x080A4FC2, lambda: calls.append(("clear",)))
+e.stub(0x080A5038, lambda: calls.append(("add", e.arg(1), struct.unpack("<i", struct.pack("<I", e.arg(2)))[0])))
 for tab in range(5):
     calls.clear()
     e.call("filt_page", APP, REF, 0x24047000, tab)
