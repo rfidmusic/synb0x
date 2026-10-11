@@ -14,10 +14,20 @@
  *      their ranges. Drive rides on Res: below the default (noon) the filter is clean; from noon to full the input is
  *      pushed into a soft clipper (up to +12 dB) and the resonant integrator is soft-limited, so high resonance
  *      growls and saturates instead of only getting louder.
- * State lives in the stock filter object, in the part only the stock process function used.
+ *   3. Type (new pad param, fenv.c): LP, HP or BP. The Filter knob is now cutoff across its whole travel, far left
+ *      20 Hz to far right 20.5 kHz (the stock curve's 0..1 half), instead of centre = off, left LP, right HP.
+ *      LP fully open or HP fully closed with no envelope depth skips the filter, as centre did before.
+ *   4. Filter envelope (new pad params, fenv.c): per voice ADSR, times 0 .. 60 s (60 x^3 s on the 0..100 knob, like the
+ *      amp envelope's cubic), Sustain a level. Gated by the voice's own amp envelope: stages 1..3 (attack, decay,
+ *      sustain) are gate on, 4 (release, also choke and one-shot end) is gate off. Depth -100..+100 moves the cutoff by
+ *      up to the knob's full travel (10 octaves). The envelope also feeds modulation source FENV.
+ *      Updated every 32 frames so fast envelopes are not stepped at the 256-frame block rate.
+ * State lives in the stock filter object, in the part only the stock process function used; the envelope sits in
+ * +0x44..+0x5f, which the stock voice start (FUN_08076704) zeroes, so each note starts it from 0.
  * Stock firmware treats the new Interp values as HighQ, so presets stay loadable there.
  */
 #include <stdint.h>
+#include "fenv.h"
 
 #pragma GCC optimize("O2", "no-tree-loop-distribute-patterns")   /* per-sample loops run for every voice; no libc to call */
 
@@ -185,9 +195,11 @@ static inline __attribute__((always_inline)) float soft(float x, float inv_t, fl
 }
 
 /*
- * stmlib Svf::Process<FILTER_MODE_LOW_PASS / HIGH_PASS> for one channel with coefficients fixed for the block.
- * CLIP: soft-limit the band-pass integrator (the resonant loop); only used on the resonant stage while driven.
+ * stmlib Svf::Process<FILTER_MODE_LOW_PASS / HIGH_PASS / BAND_PASS_NORMALIZED> for one channel with coefficients fixed
+ * for the call. CLIP: soft-limit the band-pass integrator (the resonant loop); only used on the resonant stage while
+ * driven. Band-pass is normalised (r * bp: unity at the centre), so Res narrows it without making it louder.
  */
+enum { TYPE_LP, TYPE_HP, TYPE_BP, TYPES };
 #define SVF_LOOP(OUT, NEXT_S1)                                                                                     \
     for (int i = 0; i < n; i++) {                                                                                  \
         float hp = (x[i] - rg * s1 - s2) * h;                                                                      \
@@ -198,17 +210,21 @@ static inline __attribute__((always_inline)) float soft(float x, float inv_t, fl
         x[i] = OUT;                                                                                                \
     }
 
-static void svf(float *x, int n, float g, float r, float *s1p, float *s2p, int highpass, float limit)
+static void svf(float *x, int n, float g, float r, float *s1p, float *s2p, int type, float limit)
 {
     float h = 1.0f / (1.0f + r * g + g * g), rg = r + g, s1 = *s1p, s2 = *s2p;
     if (limit > 0.0f) {
         float inv = 1.0f / limit;
-        if (highpass)
+        if (type == TYPE_HP)
             SVF_LOOP(hp, soft(g * hp + bp, inv, limit))
+        else if (type == TYPE_BP)
+            SVF_LOOP(r * bp, soft(g * hp + bp, inv, limit))
         else
             SVF_LOOP(lp, soft(g * hp + bp, inv, limit))
-    } else if (highpass) {
+    } else if (type == TYPE_HP) {
         SVF_LOOP(hp, g * hp + bp)
+    } else if (type == TYPE_BP) {
+        SVF_LOOP(r * bp, g * hp + bp)
     } else {
         SVF_LOOP(lp, g * hp + bp)
     }
@@ -276,9 +292,194 @@ static void adc_drive(float **ch, int n, float d)
     }
 }
 
-/* Replaces the per-voice filter call. pad = the pad object the voice belongs to (thunks in filter_thunk.S). */
-void filter_process(uint8_t *obj, void *buf, const uint8_t *pad)
+/*
+ * Everything this file needs from the app's pad record in one pass over its store (8-byte entries: u16 id at +0,
+ * value at +4; array at store +4, count at store +10), instead of one stock lookup per setting. Settings missing from
+ * the store (a pad record from before this build cannot have them: the defaults add them) keep their defaults.
+ */
+struct pad_cfg {
+    unsigned interp, drive;
+    int type;
+    float attack, decay, sustain, release, depth;    /* seconds, seconds, level, seconds, cutoff travel -1..1 */
+};
+
+static float seg_time(int v)                       /* knob 0..1000 -> 60 x^3 seconds, 0 at 0 */
 {
+    float x = (float)v * 0.001f;
+    x = x < 0.0f ? 0.0f : x > 1.0f ? 1.0f : x;
+    return 60.0f * x * x * x;
+}
+
+static void pad_config(const uint8_t *pad, struct pad_cfg *c)
+{
+    int v[7] = {0, 0, DEF_FTYPE, DEF_FATTACK, DEF_FDECAY, DEF_FSUSTAIN, DEF_FRELEASE};
+    int depth = DEF_FDEPTH;
+    if (pad) {
+        uint32_t id = *(const uint32_t *)(pad + 0x18);
+        unsigned row = (id >> 8) & 0xff, col = id & 0xff;
+        if (row < 4 && col < 5) {
+            const uint8_t *store = (const uint8_t *)(APP_PADS + row * 0xf0u + col * 0x30u);
+            const uint8_t *e = *(const uint8_t *const *)(store + 4);
+            unsigned count = *(const uint16_t *)(store + 10);
+            for (unsigned i = 0; e && i < count; i++, e += 8) {
+                int value = *(const int32_t *)(e + 4);
+                switch (*(const uint16_t *)e) {
+                case 0xf1:       v[0] = value; break;
+                case 0xdb:       v[1] = value; break;
+                case P_FTYPE:    v[2] = value; break;
+                case P_FATTACK:  v[3] = value; break;
+                case P_FDECAY:   v[4] = value; break;
+                case P_FSUSTAIN: v[5] = value; break;
+                case P_FRELEASE: v[6] = value; break;
+                case P_FDEPTH:   depth = value; break;
+                }
+            }
+        }
+    }
+    c->interp = (unsigned)v[0];
+    c->drive = (unsigned)v[1];
+    c->type = v[2] >= 0 && v[2] < TYPES ? v[2] : TYPE_LP;
+    c->attack = seg_time(v[3]);
+    c->decay = seg_time(v[4]);
+    c->sustain = v[5] < 0 ? 0.0f : v[5] > 1000 ? 1.0f : (float)v[5] * 0.001f;
+    c->release = seg_time(v[6]);
+    c->depth = depth < -1000 ? -1.0f : depth > 1000 ? 1.0f : (float)depth * 0.001f;
+}
+
+/*
+ * The filter envelope, one per voice, in the filter object at +0x44..+0x5f: the stock voice start zeroes that range
+ * (FUN_08076704 via FUN_080766d0), so a new note always begins IDLE at level 0. +0x44 is also the FENV modulation
+ * source object: the engine reads a source's value at +4 (here: level), and never its first word.
+ */
+struct envstate {
+    uint32_t src_word;           /* +0x44: source object word 0, unused */
+    float level;                 /* +0x48: 0..1, the FENV source value */
+    uint8_t stage;               /* +0x4c */
+    uint8_t amp_last;            /* +0x4d: amp envelope stage at the previous step */
+    uint8_t pad[2];
+    float base;                  /* +0x50: smoothed cutoff position 0..1 (knob part only) */
+    float t;                     /* +0x54: seconds into the decay / release segment */
+};
+enum { ENV_IDLE, ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
+#define ENV(obj) ((struct envstate *)((obj) + 0x44))
+#define SUB      32              /* frames per envelope / cutoff step */
+#define MAX_SUBS 16
+
+/* 2^x, bit trick with a quadratic correction (~0.3%) */
+static inline __attribute__((always_inline)) float exp2f_fast(float x)
+{
+    if (x < -30.0f)
+        return 0.0f;
+    int i = (int)x - (x < 0.0f);
+    float f = x - (float)i;
+    float p = 1.0f + f * (0.6565f + f * 0.3435f);
+    union { float f; uint32_t u; } u = {p};
+    u.u += (uint32_t)i << 23;
+    return u.f;
+}
+
+/* Exponential segment: covers 99% of the way to the target in t seconds (log2(100) = 6.6439) */
+static float approach(float level, float target, float t, float dt)
+{
+    if (t <= dt)
+        return target;
+    return target + (level - target) * exp2f_fast(-6.6439f * dt / t);
+}
+
+/* Advance one step of dt seconds. amp = the voice's amp envelope stage (0 idle, 1 attack, 2 decay, 3 sustain,
+   4 release, 5 done). A fresh attack of the amp envelope (stage back to 1 from a later stage: a mono / legato
+   retrigger without a voice start) restarts the attack from the current level. */
+static void env_step(struct envstate *e, unsigned amp, const struct pad_cfg *c, float dt)
+{
+    int gate = amp >= 1 && amp <= 3;
+    if (amp == 1 && e->amp_last > 1 && e->stage != ENV_ATTACK)
+        e->stage = ENV_ATTACK;
+    e->amp_last = (uint8_t)amp;
+    switch (e->stage) {
+    case ENV_IDLE:
+        if (!gate)
+            return;
+        e->stage = ENV_ATTACK;
+        /* fall through */
+    case ENV_ATTACK:
+        if (!gate) {
+            e->stage = ENV_RELEASE;
+            e->t = 0.0f;
+            break;
+        }
+        e->level = c->attack <= dt ? 1.0f : e->level + dt / c->attack;
+        if (e->level >= 1.0f) {
+            e->level = 1.0f;
+            e->stage = ENV_DECAY;
+            e->t = 0.0f;
+        }
+        return;
+    case ENV_DECAY:
+        if (!gate) {
+            e->stage = ENV_RELEASE;
+            e->t = 0.0f;
+            break;
+        }
+        /* exponential, 99% of the way at the Decay time, where it lands on Sustain (a step of under 1%) */
+        e->t += dt;
+        if (e->t >= c->decay) {
+            e->level = c->sustain;
+            e->stage = ENV_SUSTAIN;
+        } else {
+            e->level = approach(e->level, c->sustain, c->decay, dt);
+        }
+        return;
+    case ENV_SUSTAIN:
+        if (!gate) {
+            e->stage = ENV_RELEASE;
+            e->t = 0.0f;
+            break;
+        }
+        e->level = c->sustain;                       /* follows the knob */
+        return;
+    case ENV_RELEASE:
+        if (gate) {                                  /* re-gated without a voice start */
+            e->stage = ENV_ATTACK;
+            return;
+        }
+        break;
+    default:
+        e->level = 0.0f;
+        return;
+    }
+    /* release, from wherever the level is: exponential, 99% of the way at the Release time, where it ends at 0 */
+    e->t += dt;
+    if (e->t >= c->release) {
+        e->level = 0.0f;
+        e->stage = ENV_DONE;
+    } else {
+        e->level = approach(e->level, 0.0f, c->release, dt);
+    }
+}
+
+/* Replaces the per-voice filter call. pad = the pad object the voice belongs to, amp = the voice's amp envelope stage
+   byte (thunks in filter_thunk.S). */
+void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *amp)
+{
+    struct pad_cfg cfg;
+    pad_config(pad, &cfg);
+
+    /* the envelope runs for every block, silent or not, so FENV keeps moving for the other destinations */
+    struct envstate *env = ENV(obj);
+    int n = fw_buf_frames(buf);
+    int sub = SUB, subs = 0;
+    float levels[MAX_SUBS];
+    if (n > 0) {
+        if (n > SUB * MAX_SUBS)
+            sub = (n + MAX_SUBS - 1) / MAX_SUBS;
+        subs = (n + sub - 1) / sub;
+        for (int k = 0; k < subs; k++) {
+            int len = k == subs - 1 ? n - k * sub : sub;
+            env_step(env, amp ? *amp : 0, &cfg, (float)len * (1.0f / FS));
+            levels[k] = env->level;
+        }
+    }
+
     if (fw_buf_silent(buf))
         return;
     struct fstate *st = (struct fstate *)(obj + 4);
@@ -288,24 +489,27 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad)
             w[i] = 0;
         st->magic = MAGIC;
     }
-    unsigned interp = pad_interp(pad);
+    unsigned interp = cfg.interp;
     int crunching = interp >= STOCK_INTERP && interp < STOCK_INTERP + CRUNCHES + MACHINES;
     uint8_t *params = *(uint8_t **)(obj + OBJ_PARAMS);
-    float knob = params ? fw_param(params + 8) : 0.0f;
-    if (knob == 0.0f) {
+    float knob = params ? fw_param(params + 8) : 1.0f;
+    float pos = (knob + 1.0f) * 0.5f;                       /* cutoff position 0..1 on the stock curve */
+    pos = pos < 0.0f ? 0.0f : pos > 1.0f ? 1.0f : pos;
+    int type = cfg.type;
+    int active = cfg.depth != 0.0f || type == TYPE_BP || (type == TYPE_LP ? pos < 0.999f : pos > 0.001f);
+    if (!active) {
         st->on = 0;
         if (!crunching)
             return;
     }
 
     float *ch[2] = {0, 0};
-    int n = fw_buf_frames(buf);
     fw_buf_chans(buf, &ch[0], &ch[1]);
     if (!ch[0] || n <= 0)
         return;
     if (interp >= FIRST_MACHINE && interp < FIRST_MACHINE + MACHINES) {
         const struct machine *m = &machines[interp - FIRST_MACHINE];
-        float d = (float)pad_setting(pad, 0xdb) * 0.001f;
+        float d = (float)cfg.drive * 0.001f;
         if (d > 0.0f)
             adc_drive(ch, n, d > 1.0f ? 1.0f : d);
         if (m->hold) {
@@ -321,45 +525,55 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad)
     } else if (crunching) {
         crunch(st, ch, n, crunch_rate[interp - FIRST_CRUNCH]);
     }
-    if (knob == 0.0f)
+    if (!active)
         return;
 
-    float hz = fw_cutoff_hz(knob < 0.0f ? knob + 1.0f : knob);
-    float res = fw_param(params + 0x44);
+    float res = params ? fw_param(params + 0x44) : 0.0f;
     float q = fw_res_q(res);
     float drive = (res - 0.5f) * 2.0f;                      /* 0 up to the default Res, 1 at full */
     drive = drive < 0.0f ? 0.0f : drive > 1.0f ? 1.0f : drive * drive;
-    if (hz < 10.0f)
-        hz = 10.0f;
-    if (hz > 0.45f * FS)
-        hz = 0.45f * FS;
     if (!(q > 0.1f))
         q = 0.1f;                                            /* the stock curve's own minimum (Res at 0) */
     if (q > 40.0f)
         q = 40.0f;
-    float g = tan_approx(PI_F * hz / FS), r = 1.0f / q;
+    float r = 1.0f / q;
     if (!st->on) {
-        st->g = g;
         st->r = r;
         st->drive = drive;
+        env->base = pos;
         for (int k = 0; k < 2; k++)
             st->s1[k][0] = st->s1[k][1] = st->s2[k][0] = st->s2[k][1] = 0.0f;
         st->on = 1;
     } else {
-        st->g += SMOOTH * (g - st->g);
         st->r += SMOOTH * (r - st->r);
         st->drive += SMOOTH * (drive - st->drive);
     }
-    int hp = knob > 0.0f;
+    /* knob changes glide like the stock per-block smoothing (1/3 per block), spread over the steps */
+    float glide = 1.0f - exp2f_fast(-0.585f * (float)sub / 256.0f);      /* (2/3)^(sub/256) */
     /* resonant stage ceiling: off below noon (clean, linear), from 4 down to 1 as drive rises */
     float limit = st->drive > 0.001f ? 4.0f - 3.0f * st->drive : 0.0f;
-    for (int c = 0; c < 2; c++) {
-        if (!ch[c])
-            continue;
-        if (st->drive > 0.001f)
-            drive_in(ch[c], n, st->drive);
-        svf(ch[c], n, st->g, R_BUTTERWORTH, &st->s1[0][c], &st->s2[0][c], hp, 0.0f);
-        svf(ch[c], n, st->g, st->r, &st->s1[1][c], &st->s2[1][c], hp, limit);
+    if (st->drive > 0.001f)
+        for (int c = 0; c < 2; c++)
+            if (ch[c])
+                drive_in(ch[c], n, st->drive);
+    for (int k = 0; k < subs; k++) {
+        int at = k * sub, len = k == subs - 1 ? n - at : sub;
+        env->base += glide * (pos - env->base);
+        float p = env->base + cfg.depth * levels[k];
+        p = p < 0.0f ? 0.0f : p > 1.0f ? 1.0f : p;
+        float hz = fw_cutoff_hz(p);
+        if (hz < 10.0f)
+            hz = 10.0f;
+        if (hz > 0.45f * FS)
+            hz = 0.45f * FS;
+        float g = tan_approx(PI_F * hz / FS);
+        st->g = g;
+        for (int c = 0; c < 2; c++) {
+            if (!ch[c])
+                continue;
+            svf(ch[c] + at, len, g, R_BUTTERWORTH, &st->s1[0][c], &st->s2[0][c], type, 0.0f);
+            svf(ch[c] + at, len, g, st->r, &st->s1[1][c], &st->s2[1][c], type, limit);
+        }
     }
 }
 

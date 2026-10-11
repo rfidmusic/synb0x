@@ -1,23 +1,25 @@
-"""Pad crunch + state-variable filter under Unicorn.
+"""Pad crunch, state-variable filter (Type LP / HP / BP) and filter envelope under Unicorn.
 
-Real firmware runs for: the stock cutoff and resonance curves, the audio-buffer accessors, the Interp list
-registration path up to the stock registrar (stubbed), and both voice call-site thunks.
-Stubbed: the modulated-parameter read (returns test values), the list registrar.
-Reference: a Python model of the same SVF and crunch, so these checks pin the arithmetic, not the sound.
-NOT checked: how it sounds, and CPU load with many voices (hardware).
+Real firmware runs for: the stock cutoff and resonance curves, the audio-buffer accessors, both voice call-site thunks.
+Stubbed: the modulated-parameter read (returns test values).
+Reference: a Python model of the same SVF, envelope and crunch, so these checks pin the arithmetic, not the sound.
+NOT checked: how it sounds, CPU load with many voices, and the real voice start / note-off (hardware).
 """
 import math
 import struct
 import sys
 
-from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R6, UC_ARM_REG_S0, UC_ARM_REG_SP
+from unicorn.arm_const import UC_ARM_REG_R6, UC_ARM_REG_S0
 
-from emu import STACK, Emu
+from emu import Emu
 
-e = Emu("out/solo+slice+filter+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 
-OBJ, PARAMS, PAD, BUF, LBUF, RBUF = 0x24060000, 0x24061000, 0x24062000, 0x24063000, 0x24064000, 0x24066000
+OBJ, PARAMS, PAD, BUF, LBUF, RBUF, AMP = 0x24060000, 0x24061000, 0x24062000, 0x24063000, 0x24064000, 0x24066000, 0x24068000
 N = 64
+FS = 48000.0
+P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH = range(0x1E1, 0x1E7)
+LP, HP, BP = 0, 1, 2
 values = {}
 
 
@@ -43,36 +45,55 @@ APP_PADS, ARR = 0x24020088 + 0x1840, 0x24073000
 PAD_ROW, PAD_COL = 1, 2
 
 
-def set_interp(v, row=PAD_ROW, col=PAD_COL, sat=0):
+def set_pad(interp=0, row=PAD_ROW, col=PAD_COL, sat=0, ftype=LP, attack=0, decay=300, sustain=0, release=300, depth=0,
+            with_fenv=True):
     """The app's record of the pad (what the screen shows and presets save)."""
     store = APP_PADS + row * 0xF0 + col * 0x30
-    arr = ARR + (row * 4 + col) * 0x40
-    e.uc.mem_write(arr, struct.pack("<HHI", 0x8B, 0, 0) + struct.pack("<HHI", 0xF1, 0, v) + struct.pack("<HHI", 0xDB, 0, sat))
+    arr = ARR + (row * 4 + col) * 0x80
+    ent = [(0x8B, 0), (0xF1, interp), (0xDB, sat)]
+    if with_fenv:
+        ent += [(P_FTYPE, ftype), (P_FATTACK, attack), (P_FDECAY, decay), (P_FSUSTAIN, sustain), (P_FRELEASE, release),
+                (P_FDEPTH, depth)]
+    e.uc.mem_write(arr, b"".join(struct.pack("<HHi", i, 0, v) for i, v in ent))
     e.w32(store + 4, arr)
-    e.uc.mem_write(store + 10, struct.pack("<H", 3))
+    e.uc.mem_write(store + 10, struct.pack("<H", len(ent)))
 
 
-def setup(knob, res=0.0, interp=0):
+def setup(knob, res=0.0, **pad):
     values[PARAMS + 8] = knob
     values[PARAMS + 0x44] = res
     e.w32(PAD + 0x18, PAD_ROW << 8 | PAD_COL)    # engine pad id: bank << 16 | row << 8 | col
-    e.w32(PAD + 0x578, 0)                         # the engine's own copy, as left by a pad reset: must not matter
-    set_interp(interp)
+    set_pad(**pad)
 
 
-def run(left, right=None, pad=PAD, silent=False):
+def amp(stage):
+    e.uc.mem_write(AMP, bytes([stage]))
+
+
+def run(left, right=None, pad=PAD, silent=False, obj=OBJ):
     e.uc.mem_write(LBUF, struct.pack(f"<{len(left)}f", *left))
     if right is not None:
         e.uc.mem_write(RBUF, struct.pack(f"<{len(right)}f", *right))
     e.uc.mem_write(BUF, struct.pack("<IIIIBB", len(left), len(left), LBUF, RBUF if right is not None else 0, int(silent), int(right is not None)))
-    e.call("filter_process", OBJ, BUF, pad)
+    e.call("filter_process", obj, BUF, pad, AMP)
     l = list(struct.unpack(f"<{len(left)}f", e.uc.mem_read(LBUF, 4 * len(left))))
     r = list(struct.unpack(f"<{len(right)}f", e.uc.mem_read(RBUF, 4 * len(right)))) if right is not None else None
     return l, r
 
 
+def note_on(obj=OBJ):
+    """What the stock voice start does to the filter object (FUN_08076704): +0x40..+0x5f zeroed (and more)."""
+    e.uc.mem_write(obj + 0x40, bytes(0x20))
+    amp(1)
+
+
 def reset():
     e.uc.mem_write(OBJ + 4, b"\xa5" * 0x30)          # stale stock coefficients: the patch must initialise itself
+    note_on()
+
+
+def level(obj=OBJ):
+    return struct.unpack("<f", e.uc.mem_read(obj + 0x48, 4))[0]
 
 
 def sine(hz, n=N, start=0, amp=0.5):
@@ -92,7 +113,15 @@ def soft(x, t):
     return t * u * (1 - 0.148148 * u * u)
 
 
-def model_svf(x, g, r, s, hp, limit):
+def exp2f_fast(x):
+    if x < -30:
+        return 0.0
+    i = int(x) - (x < 0 and x != int(x))
+    f = x - i
+    return (1 + f * (0.6565 + f * 0.3435)) * 2.0 ** i
+
+
+def model_svf(x, g, r, s, ftype, limit):
     h = 1 / (1 + r * g + g * g)
     s1, s2 = s
     out = []
@@ -102,17 +131,18 @@ def model_svf(x, g, r, s, hp, limit):
         s1 = soft(g * hpv + bp, limit) if limit else g * hpv + bp
         lp = g * bp + s2
         s2 = g * bp + lp
-        out.append(hpv if hp else lp)
+        out.append(hpv if ftype == HP else r * bp if ftype == BP else lp)
     return out, [s1, s2]
 
 
-def model_block(x, g, r, drive, states, hp):
-    """One block of the patched filter: drive, Butterworth stage, resonant stage."""
-    if drive > 0.001:
-        x = [soft(v * (1 + 3 * drive), 1.0) for v in x]
-    y, states[0] = model_svf(x, g, 1.84776, states[0], hp, None)
-    out, states[1] = model_svf(y, g, r, states[1], hp, 4 - 3 * drive if drive > 0.001 else None)
-    return out
+def g_of(p):
+    hz = min(max(curve(0x08060640, min(max(p, 0.0), 1.0)), 10.0), 0.45 * 48000)
+    x = math.pi * hz / 48000
+    return x * (15 - x * x) / (15 - 6 * x * x)
+
+
+def r_of(res):
+    return 1 / min(max(curve(0x080606C0, res), 0.1), 40.0)
 
 
 def drive_of(res):
@@ -120,13 +150,31 @@ def drive_of(res):
     return d * d
 
 
-def coeffs(knob, res):
-    hz = curve(0x08060640, knob + 1 if knob < 0 else knob)
-    q = curve(0x080606C0, res)
-    hz = min(max(hz, 10.0), 0.45 * 48000)
-    q = min(max(q, 0.1), 40.0)
-    x = math.pi * hz / 48000
-    return x * (15 - x * x) / (15 - 6 * x * x), 1 / q, hz, q
+class Model:
+    """One voice of the patched filter: per-32-frame cutoff steps, knob glide, Res / drive smoothed per block."""
+    def __init__(self, knob, res, ftype, depth=0.0):
+        self.pos = (knob + 1) / 2
+        self.base, self.r, self.d = self.pos, r_of(res), drive_of(res)
+        self.res, self.ftype, self.depth = res, ftype, depth
+        self.states = [[0.0, 0.0], [0.0, 0.0]]
+        self.first = True
+
+    def block(self, x, levels=None, sub=32):
+        if not self.first:
+            self.r += 0.33333 * (r_of(self.res) - self.r)
+            self.d += 0.33333 * (drive_of(self.res) - self.d)
+        self.first = False
+        if self.d > 0.001:
+            x = [soft(v * (1 + 3 * self.d), 1.0) for v in x]
+        glide = 1 - exp2f_fast(-0.585 * sub / 256)
+        out = []
+        for k in range(0, len(x), sub):
+            self.base += glide * (self.pos - self.base)
+            g = g_of(self.base + self.depth * (levels[k // sub] if levels else 0.0))
+            y, self.states[0] = model_svf(x[k:k + sub], g, 1.84776, self.states[0], self.ftype, None)
+            y, self.states[1] = model_svf(y, g, self.r, self.states[1], self.ftype, 4 - 3 * self.d if self.d > 0.001 else None)
+            out += y
+        return out
 
 
 fails = 0
@@ -138,46 +186,70 @@ def check(label, cond, detail=""):
     fails += not cond
 
 
+# --- the Filter knob is cutoff: far left 20 Hz, far right 20.5 kHz (the stock curve's 0..1)
+check("stock curve: knob far left = 20 Hz, centre = 640 Hz, far right = 20480 Hz",
+      abs(curve(0x08060640, 0.0) - 20) < 0.5 and abs(curve(0x08060640, 0.5) - 640) < 1 and abs(curve(0x08060640, 1.0) - 20480) < 1)
+
 # --- bypass
 reset()
-setup(0.0)
+setup(1.0)
 x = sine(1000)
 l, _ = run(x)
-check("Filter knob at centre, Interp Normal: buffer untouched", all(abs(a - b) < 1e-7 for a, b in zip(l, x)))
-setup(-0.5)
+check("LP, Filter fully right, no depth: buffer untouched", all(abs(a - b) < 1e-7 for a, b in zip(l, x)))
+reset()
+setup(-1.0, ftype=HP)
+l, _ = run(x)
+check("HP, Filter fully left, no depth: buffer untouched", all(abs(a - b) < 1e-7 for a, b in zip(l, x)))
+reset()
+setup(1.0, ftype=BP)
+l, _ = run(x)
+check("BP is never skipped", any(abs(a - b) > 1e-4 for a, b in zip(l, x)))
+reset()
+setup(0.2)
 l, _ = run(x, silent=True)
 check("silent buffer: untouched, as stock", all(abs(a - b) < 1e-7 for a, b in zip(l, x)))
+reset()
+setup(0.0, with_fenv=False)
+l, _ = run(sine(5000))
+check("pad record without the new settings (defaults: LP): Filter at centre (640 Hz) low-passes", rms(l) < 0.3 * rms(sine(5000)))
 
-# --- the filter matches the stmlib SVF model, block after block
-reset()
-setup(-0.4, res=0.3)
-g, r, hz, q = coeffs(-0.4, 0.3)
-check(f"stock curves give a usable cutoff and Q (knob -0.4 -> {hz:.0f} Hz, res 0.3 -> Q {q:.2f})", 20 < hz < 20000 and 0.1 <= q <= 40)
+# --- each type matches the stmlib SVF model, block after block (knob glide spread over the 32-frame steps)
 sig = [math.sin(i * 0.37) * 0.3 + math.sin(i * 0.05) * 0.4 for i in range(3 * N)]
-states, ms, err = [[0.0, 0.0], [0.0, 0.0]], [g, r, 0.0], 0.0
-for b in range(3):
-    l, _ = run(sig[b * N:(b + 1) * N])
-    if b:
-        ms = [m + 0.33333 * (t - m) for m, t in zip(ms, (g, r, 0.0))]
-    ref = model_block(sig[b * N:(b + 1) * N], ms[0], ms[1], ms[2], states, False)
-    err = max(err, max(abs(p - q) for p, q in zip(l, ref)))
-check("low-pass output equals the model (two stmlib SVF stages, coefficient smoothing) over three blocks", err < 1e-4, err)
+for ftype, name in ((LP, "low-pass"), (HP, "high-pass"), (BP, "band-pass")):
+    reset()
+    setup(-0.2, res=0.3, ftype=ftype)
+    m, err = Model(-0.2, 0.3, ftype), 0.0
+    for b in range(3):
+        l, _ = run(sig[b * N:(b + 1) * N])
+        ref = m.block(sig[b * N:(b + 1) * N])
+        err = max(err, max(abs(p - q) for p, q in zip(l, ref)))
+    check(f"{name} output equals the model over three blocks", err < 1e-4, err)
 reset()
-setup(0.5, res=0.9)
-g, r, _, _ = coeffs(0.5, 0.9)
-d = drive_of(0.9)
-states, ms, err = [[0.0, 0.0], [0.0, 0.0]], [g, r, d], 0.0
-loud = [v * 2.0 for v in sig]
+setup(0.4, res=0.9, ftype=HP)
+m, err, loud = Model(0.4, 0.9, HP), 0.0, [v * 2.0 for v in sig]
 for b in range(3):
     l, _ = run(loud[b * N:(b + 1) * N])
-    ref = model_block(loud[b * N:(b + 1) * N], ms[0], ms[1], ms[2], states, True)
-    err = max(err, max(abs(p - q) for p, q in zip(l, ref)))
-check(f"high-pass with drive (Res 0.9 -> drive {d:.2f}) equals the model", err < 1e-4, err)
+    err = max(err, max(abs(p - q) for p, q in zip(l, m.block(loud[b * N:(b + 1) * N]))))
+check(f"high-pass with drive (Res 0.9 -> drive {drive_of(0.9):.2f}) equals the model", err < 1e-4, err)
 
-# --- low-pass and high-pass behave
-def response(knob, res, hz_test, blocks=8):
+# knob turned mid-note: glides like the stock smoothing instead of jumping
+reset()
+setup(-0.6)
+m = Model(-0.6, 0.0, LP)
+for b in range(2):
+    run(sig[b * N:(b + 1) * N])
+    m.block(sig[b * N:(b + 1) * N])
+values[PARAMS + 8] = 0.6
+m.pos = 0.8
+l, _ = run(sig[2 * N:3 * N])
+ref = m.block(sig[2 * N:3 * N])
+check("Filter knob moved: cutoff glides (equals the model)", max(abs(p - q) for p, q in zip(l, ref)) < 1e-4)
+
+
+# --- low-pass, high-pass and band-pass behave
+def response(knob, res, hz_test, ftype=LP, blocks=8):
     reset()
-    setup(knob, res)
+    setup(knob, res, ftype=ftype)
     out = []
     for b in range(blocks):
         l, _ = run(sine(hz_test, start=b * N))
@@ -185,43 +257,25 @@ def response(knob, res, hz_test, blocks=8):
     return rms(out[N * 4:]) / rms(sine(hz_test, n=N * 4))
 
 
-lp_low, lp_high = response(-0.6, 0.5, 100), response(-0.6, 0.5, 12000)       # Res 0.5 = the stock default (Q 1.35)
-hz = coeffs(-0.6, 0.5)[2]
-check(f"LP at {hz:.0f} Hz passes 100 Hz and cuts 12 kHz", lp_low > 0.9 and lp_high < 0.1, (lp_low, lp_high))
-hp_low, hp_high = response(0.6, 0.5, 100), response(0.6, 0.5, 12000)
-hz = coeffs(0.6, 0.5)[2]
-check(f"HP at {hz:.0f} Hz cuts 100 Hz and passes 12 kHz", hp_low < 0.1 and hp_high > 0.9, (hp_low, hp_high))
-fc = coeffs(-0.6, 0.5)[2]
-one, two = response(-0.6, 0.5, fc * 2), response(-0.6, 0.5, fc * 4)
+def knob_for(hz):
+    return 2 * math.log2(hz / 20) / 10 - 1
+
+
+k = knob_for(1000)
+lp_low, lp_high = response(k, 0.5, 100), response(k, 0.5, 12000)       # Res 0.5 = the stock default (Q 1.35)
+check("LP at 1 kHz passes 100 Hz and cuts 12 kHz", lp_low > 0.9 and lp_high < 0.1, (lp_low, lp_high))
+hp_low, hp_high = response(k, 0.5, 100, HP), response(k, 0.5, 12000, HP)
+check("HP at 1 kHz cuts 100 Hz and passes 12 kHz", hp_low < 0.1 and hp_high > 0.9, (hp_low, hp_high))
+bp_mid, bp_low, bp_high = response(k, 0.5, 1000, BP), response(k, 0.5, 100, BP), response(k, 0.5, 10000, BP)
+check(f"BP at 1 kHz: passes 1 kHz (x{bp_mid:.2f}), cuts 100 Hz and 10 kHz", bp_mid > 0.5 and bp_low < 0.05 and bp_high < 0.05,
+      (bp_mid, bp_low, bp_high))
+bp_narrow = response(k, 0.9, 1400, BP) / response(k, 0.9, 1000, BP)
+bp_wide = response(k, 0.2, 1400, BP) / response(k, 0.2, 1000, BP)
+check("BP: more Res = narrower band", bp_narrow < bp_wide, (bp_narrow, bp_wide))
+one, two = response(k, 0.5, 2000), response(k, 0.5, 4000)
 check(f"24 dB/oct: one octave above cutoff {20 * math.log10(one):.0f} dB, two octaves {20 * math.log10(two):.0f} dB", two < 0.02 and two / one < 0.09, (one, two))
-fc = coeffs(-0.5, 0.0)[2]
-flat, peak = response(-0.5, 0.0, fc), response(-0.5, 0.5, fc)
-check(f"resonance raises the level at the cutoff ({fc:.0f} Hz): x{peak / flat:.1f} at the default Res", peak > 3 * flat, (flat, peak))
-
-
-def thd(knob, res, amp, hz):
-    reset()
-    setup(knob, res)
-    out = []
-    for b in range(16):
-        l, _ = run(sine(hz, start=b * N, amp=amp))
-        out += l
-    y = out[8 * N:]
-    t0 = 8 * N
-    c = sum(v * math.cos(2 * math.pi * hz * (t0 + i) / 48000) for i, v in enumerate(y)) * 2 / len(y)
-    s_ = sum(v * math.sin(2 * math.pi * hz * (t0 + i) / 48000) for i, v in enumerate(y)) * 2 / len(y)
-    fund = [s_ * math.sin(2 * math.pi * hz * (t0 + i) / 48000) + c * math.cos(2 * math.pi * hz * (t0 + i) / 48000) for i in range(len(y))]
-    return rms([a - b for a, b in zip(y, fund)]) / max(rms(fund), 1e-9), rms(y)
-
-
-clean, lvl_clean = thd(-0.4, 0.5, 0.5, 375)
-driven, lvl_driven = thd(-0.4, 0.95, 0.5, 375)
-check(f"Res at default: clean (distortion {clean * 100:.2f}%)", clean < 0.01, clean)
-check(f"Res near full: driven (distortion {driven * 100:.0f}%)", driven > 0.05, driven)
-a1, _ = thd(-0.4, 0.5, 0.1, 375)
-_, l1 = thd(-0.4, 0.5, 0.1, 375)
-_, l5 = thd(-0.4, 0.5, 0.5, 375)
-check("Res at default is linear: 5x the input gives 5x the output", abs(l5 / l1 - 5) < 0.05, l5 / l1)
+flat, peak = response(k, 0.0, 1000), response(k, 0.5, 1000)
+check(f"resonance raises the level at the cutoff: x{peak / flat:.1f} at the default Res", peak > 3 * flat, (flat, peak))
 reset()
 setup(-0.3, 1.0)
 worst = 0.0
@@ -236,17 +290,138 @@ check("knob fully left: still finite and closed", all(abs(v) < 0.6 for v in l))
 
 # --- stereo: both channels filtered, independently
 reset()
-setup(-0.6, 0.2)
+setup(knob_for(500), 0.2)
 lo, hi = sine(100), sine(12000)
 l, r = run(lo, hi)
 reset()
-setup(-0.6, 0.2)
+setup(knob_for(500), 0.2)
 l2, _ = run(lo)
 check("stereo: left matches the mono run, right is filtered on its own", max(abs(a - b) for a, b in zip(l, l2)) < 1e-6 and rms(r) < rms(hi))
 
+
+# --- the envelope
+def seconds(v):
+    return 60 * (v / 1000) ** 3
+
+
+def env_run(blocks, n=256, silent=True):
+    out = []
+    for _ in range(blocks):
+        run([0.0] * n, silent=silent)
+        out.append(level())
+    return out
+
+
+reset()
+setup(1.0, attack=300, decay=300, sustain=400, release=300, depth=0)
+t_a = seconds(300)                                # 1.62 s
+blocks_a = t_a * FS / 256
+lv = env_run(int(blocks_a) - 1)
+check(f"attack: rises linearly ({t_a:.2f} s: level after {len(lv)} blocks {lv[-1]:.3f})",
+      abs(lv[-1] - len(lv) / blocks_a) < 0.01 and all(b > a for a, b in zip(lv, lv[1:])), lv[-1])
+lv = env_run(3)
+check("attack reaches 1, then decay starts", max(lv) > 0.99 and lv[-1] < 1.0, lv)
+lv = env_run(int(seconds(300) * FS / 256) + 5)
+check(f"decay settles on Sustain 0.4 within {seconds(300):.2f} s", abs(lv[-1] - 0.4) < 0.01, lv[-1])
+lv = env_run(50)
+check("sustain holds", all(abs(v - 0.4) < 1e-4 for v in lv), lv[-1])
+setup(1.0, attack=300, decay=300, sustain=700, release=300)
+lv = env_run(1)
+check("sustain follows the Sustain knob", abs(lv[-1] - 0.7) < 1e-4, lv[-1])
+amp(4)                                            # note-off: the amp envelope is in release
+lv = env_run(int(seconds(300) * FS / 256))
+check(f"release: from the held level to ~0 in {seconds(300):.2f} s", lv[-1] < 0.7 * 0.012 and lv[0] < 0.7, (lv[0], lv[-1]))
+lv = env_run(100)
+check("release ends at 0", lv[-1] == 0.0, lv[-1])
+
+reset()
+setup(1.0, attack=0, decay=0, sustain=1000, release=0)
+lv = env_run(1, n=64)
+check("Attack 0 / Decay 0: full level on the first step", lv[0] == 1.0, lv)
+amp(4)
+lv = env_run(1, n=64)
+check("Release 0: off on the first step after the gate", lv[0] == 0.0, lv)
+
+reset()
+setup(1.0, attack=1000, decay=1000, sustain=0, release=1000)
+lv = env_run(int(60 * FS / 256 / 2))
+check("Attack 100: 60 s (half way after 30 s)", abs(lv[-1] - 0.5) < 0.01, lv[-1])
+
+reset()
+setup(1.0, attack=500, decay=300, sustain=500, release=200)
+lv = env_run(20)
+amp(4)
+held = level()
+lv = env_run(1)
+check("gate off during attack: releases from where it was, no jump", lv[0] <= held and lv[0] > 0.5 * held, (held, lv[0]))
+
+reset()
+setup(1.0, attack=200, decay=200, sustain=500, release=500)
+env_run(200)                                      # in sustain
+amp(4)
+env_run(10)
+low = level()
+amp(1)                                            # legato retrigger: amp attack again, no voice start
+lv = env_run(1)
+check("retrigger without a voice start: attacks again from the current level", lv[0] > low, (low, lv[0]))
+note_on()
+check("voice start zeroes the envelope (stock reset of +0x40..+0x5f)", level() == 0.0)
+amp(5)
+reset()
+amp(0)
+lv = env_run(5)
+check("amp envelope idle: the envelope stays at 0", all(v == 0.0 for v in lv), lv)
+
+reset()
+setup(1.0, attack=300)
+amp(1)
+run([0.0] * 256, silent=True)
+check("silent blocks still advance the envelope (FENV keeps moving)", level() > 0.0, level())
+
+# --- depth moves the cutoff
+reset()
+setup(-1.0, 0.5, attack=0, decay=0, sustain=1000, release=0, depth=500)    # knob far left (20 Hz) + half the travel
+amp(1)
+out = []
+for b in range(8):
+    l, _ = run(sine(400, start=b * N))
+    out += l
+opened = rms(out[N * 4:]) / rms(sine(400, n=N * 4))
+reset()
+setup(-1.0, 0.5, attack=0, decay=0, sustain=1000, release=0, depth=0)
+out = []
+for b in range(8):
+    l, _ = run(sine(400, start=b * N))
+    out += l
+closed = rms(out[N * 4:]) / rms(sine(400, n=N * 4))
+check(f"Depth +50 at full envelope opens a closed LP to 640 Hz (400 Hz: x{closed:.3f} -> x{opened:.2f})",
+      closed < 0.01 and opened > 0.7, (closed, opened))
+reset()
+setup(-0.2, attack=0, decay=0, sustain=1000, release=0, depth=-300, ftype=LP)
+amp(1)
+m = Model(-0.2, 0.0, LP, depth=-0.3)
+err = 0.0
+for b in range(3):
+    l, _ = run(sig[b * N:(b + 1) * N])
+    err = max(err, max(abs(p - q) for p, q in zip(l, m.block(sig[b * N:(b + 1) * N], levels=[1.0, 1.0]))))
+check("negative Depth closes the filter by Depth x envelope (equals the model)", err < 1e-4, err)
+reset()
+setup(-0.4, attack=300, decay=300, sustain=500, release=300, depth=700, ftype=BP)
+amp(1)
+m = Model(-0.4, 0.0, BP, depth=0.7)
+err = 0.0
+for b in range(4):
+    lv0 = level()
+    l, _ = run(sig[b * N:(b + 1) * N] if b < 3 else sig[:N])
+    # the model takes the envelope's per-step levels from the firmware's own rise (checked above)
+    step = 32 / (seconds(300) * FS)
+    ref = m.block(sig[b * N:(b + 1) * N] if b < 3 else sig[:N], levels=[lv0 + step, lv0 + 2 * step])
+    err = max(err, max(abs(p - q) for p, q in zip(l, ref)))
+check("a moving envelope steps the cutoff every 32 frames (equals the model)", err < 1e-4, err)
+
 # --- crunch
 reset()
-setup(0.0, interp=7 + 1)                       # 12k
+setup(1.0, interp=7 + 1)                       # 12k, filter skipped
 x = sine(997, n=N)
 l, _ = run(x)
 runs, k = [], 0
@@ -259,192 +434,52 @@ while k < N:
 check("12k: output holds each value for 4 samples (48k / 12k)", all(v == 4 for v in runs[1:-1]), runs)
 check("12k: held values are 12-bit (multiples of 1/2048)", all(abs(v * 2048 - round(v * 2048)) < 1e-3 for v in l))
 reset()
-setup(0.0, interp=7 + 2)                       # 10k: non-integer ratio
-l, _ = run([0.9 * i / N for i in range(N)])    # a ramp, so every held value differs
-runs, k = [], 0
-while k < N:
-    j = k
-    while j < N and l[j] == l[k]:
-        j += 1
-    runs.append(j - k)
-    k = j
-check("10k: holds alternate 4 and 5 samples (average 4.8)", set(runs[1:-1]) <= {4, 5} and abs(N / len(runs) - 4.8) < 0.6, runs)
-reset()
-setup(0.0, interp=7 + 5)                       # 4k
-a, _ = run(sine(997, n=N))
-b, _ = run(sine(997, n=N, start=N))
-joined = a + b
-runs, k = [], 0
-while k < 2 * N:
-    j = k
-    while j < 2 * N and joined[j] == joined[k]:
-        j += 1
-    runs.append(j - k)
-    k = j
-check("4k: holds 12 samples, continuing across the block boundary", all(v == 12 for v in runs[1:-1]), runs)
-reset()
-setup(0.0, interp=7 + 1)
+setup(1.0, interp=7 + 1)
 l, _ = run(sine(997), pad=0)
-check("no Interp location passed: no crunch", all(abs(p - q) < 1e-7 for p, q in zip(l, sine(997))))
+check("no pad passed: no crunch, filter skipped (defaults)", all(abs(p - q) < 1e-7 for p, q in zip(l, sine(997))))
 for v, name in ((0, "Normal"), (1, "HighQ"), (14, "a value past the list")):
     reset()
-    setup(0.0, interp=v)
+    setup(1.0, interp=v)
     l, _ = run(sine(997))
     check(f"Interp {name}: no crunch", all(abs(p - q) < 1e-7 for p, q in zip(l, sine(997))))
 reset()
-setup(-0.6, 0.0, interp=7 + 3)                 # 8k into the low-pass
+setup(knob_for(2000), 0.0, interp=7 + 3)        # 8k into the low-pass
 l, _ = run(sine(997))
 check("crunch and filter together: crunched, then low-passed (no longer stair-stepped)", len(set(l)) > N // 2)
 reset()
 setup(-0.6, 0.3)
-l, _ = run(sine(997))
+run(sine(997))
 check("state from an older build (magic SVF1) is reinitialised, not reused", e.r32(OBJ + 4) == 0x53564632)
 
-# --- call sites
+# --- call sites: both pass the pad from r6 and the voice's amp envelope stage
 reset()
-setup(0.0, interp=7 + 1)
+setup(1.0, interp=7 + 1, attack=300)
+VOICE = OBJ - 0xA8                              # class A: filter object = voice + 0xa8, amp envelope stage = voice + 0x2c
+e.uc.mem_write(VOICE + 0x2C, bytes([1]))
 e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
 e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
 e.uc.reg_write(UC_ARM_REG_R6, PAD)
 e.call("filter_voice_a", OBJ, BUF)
 l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
 check("sample-pad call site passes its pad (r6): crunch applies", len(set(l)) <= N // 4 + 1)
-e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
-e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
-CPAD = OBJ - 0x3AC                              # class B: the filter object sits at pad + 0x3ac
-e.w32(CPAD + 0x18, 3 << 8 | 0)
-set_interp(0, row=3, col=0)
-e.call("filter_voice_b", OBJ, BUF, PAD)
-l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
-check("clip / slicer call site, Interp Normal in the app's record: no crunch", len(set(l)) > N // 2)
-reset()
-set_interp(7 + 1, row=3, col=0)
-e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
-e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
-e.call("filter_voice_b", OBJ, BUF, PAD)
-l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
-check("clip / slicer call site finds its pad (filter object - 0x3ac) and its Interp (12k): crunch applies", len(set(l)) <= N // 4 + 1)
+check("sample-pad call site passes the voice's amp stage: the envelope started", level() > 0.0, level())
 
-# --- the engine resetting its own copy of Interp does not stop the crunch (his 3.1.f report)
-reset()
-setup(0.0, interp=7 + 1)
-e.w32(PAD + 0x578, 0)
-l, _ = run(sine(997))
-check("engine copy reset to Normal, app record still 12k: crunch keeps going", len(set(l)) <= N // 4 + 1)
-set_interp(1)
-l, _ = run(sine(997))
-check("app record set to HighQ: crunch stops", len(set(l)) > N // 2)
-e.w32(PAD + 0x18, 7 << 8 | 0)
-set_interp(7 + 1)
-l, _ = run(sine(997))
-check("a pad id outside the 4x4 grid reads as Normal (no stray lookups)", len(set(l)) > N // 2)
+CPAD = 0x24070000                               # class B: voice blocks at pad + 0x260 + v * 0x410
+for v in (0, 1):
+    obj = CPAD + 0x3AC + v * 0x410
+    e.w32(obj + 0x84, PARAMS)
+    e.uc.mem_write(obj + 0x40, bytes(0x20))
+    e.uc.mem_write(obj + 0x110, bytes([1]))     # block + 0x25c: amp envelope stage
+    e.w32(CPAD + 0x18, 3 << 8 | 0)
+    set_pad(interp=7 + 1, row=3, col=0, attack=300)
+    e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
+    e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
+    e.uc.reg_write(UC_ARM_REG_R6, CPAD)
+    values[PARAMS + 8] = 1.0
+    e.call("filter_voice_b", obj, BUF)
+    l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
+    check(f"clip / slicer voice {v + 1}: its pad's settings apply (crunch), amp stage read (envelope started)",
+          len(set(l)) <= N // 4 + 1 and level(obj) > 0.0, (len(set(l)), level(obj)))
 
-
-# --- pad pages: Interp right under Saturation
-def page(addr):
-    ids = []
-    for k in range(36):
-        v = e.r16(addr + 2 * k)
-        if v == 0:
-            break
-        ids.append(v)
-    return ids
-
-
-check("Sample pad page: Saturation, Interp, then the rest", page(0x080EFD38) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xA0, 0xC4, 0x6A, 0xD0, 0xF5], [hex(v) for v in page(0x080EFD38)])
-check("Multisample pad page: same", page(0x080EFBD0) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xA0, 0xF5, 0xC4, 0x6A], [hex(v) for v in page(0x080EFBD0)])
-check("Slicer pad page: same (Interp added)", page(0x080EF900) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xC4, 0xA1, 0x6A, 0xF5], [hex(v) for v in page(0x080EF900)])
-check("Clip pad page: same (Interp added)", page(0x080EFA68) == [0xDB, 0xF1, 0x93, 0x95, 0x62, 0xC4, 0xA1, 0x6A, 0xF5], [hex(v) for v in page(0x080EFA68)])
-
-# --- Interp list
-seen = {}
-e.stub(0x0808C0D8, lambda: seen.update(names=e.arg(3), count=e.r32(e.uc.reg_read(UC_ARM_REG_SP)), param=e.arg(1), label=e.cstr(e.arg(2)), xml=e.cstr(e.r32(e.uc.reg_read(UC_ARM_REG_SP) + 4))))
-e.w32(STACK, 2)
-e.w32(STACK + 4, 0x080CC794)
-e.call("interp_register", 0x24001000, 0xF1, 0, 0x080EB7E0)
-names = [e.cstr(e.r32(seen["names"] + 4 * i)) for i in range(seen["count"])]
-check("Fidelity list: Normal, HighQ, SP1200, SP-12, S950, MPC60, SP Raw, 16k .. 2k", names == ["Normal", "HighQ", "SP1200", "SP-12", "S950", "MPC60", "SP Raw", "16k", "12k", "10k", "8k", "6k", "4k", "2k"] and seen["param"] == 0xF1, names)
-
-check("label reads 'Fidelity:', xml name stays 'interpqual'", seen["label"] == "Fidelity:" and seen["xml"] == "interpqual", (seen["label"], seen["xml"]))
-
-
-# --- machine modes, output side (the reader side is test_machine.py)
-def runs_of(x):
-    r, k = [], 0
-    while k < len(x):
-        j = k
-        while j < len(x) and x[j] == x[k]:
-            j += 1
-        r.append(j - k)
-        k = j
-    return r
-
-
-e.uc.mem_write(OBJ + 0x60, b"\xa5" * 0x14)        # stale stock words where the output stage keeps its state
-reset()
-setup(0.0, interp=2)                              # SP1200
-blocks = [run(sine(997, start=b * N))[0] for b in range(4)]
-first = blocks[0]
-check("SP1200 output: finite after stale stock words in the state area", all(math.isfinite(v) for v in first))
-hz = [0.0] * 0
-setup(0.0, interp=4)                             # S950: no hold, so the output filter alone sees the tone
-reset()
-e.uc.mem_write(OBJ + 0x60, bytes(0x14))
-l = []
-for b in range(8):
-    l += run([0.4 * math.sin(2 * math.pi * 20000 * (b * N + i) / 48000) for i in range(N)])[0]
-setup(0.0, interp=0)
-reset()
-dry = []
-for b in range(8):
-    dry += run([0.4 * math.sin(2 * math.pi * 20000 * (b * N + i) / 48000) for i in range(N)])[0]
-check(f"machine output filter: a 20 kHz tone through S950's 13.5 kHz stage comes out {20 * math.log10(rms(l[N:]) / rms(dry[N:])):.1f} dB", rms(l[N:]) < 0.5 * rms(dry[N:]))
-setup(0.0, interp=4)                             # S950: no fixed hold, 12-bit only
-reset()
-l = run(sine(997))[0]
-check("S950 output: no fixed-rate hold (variable-rate DAC), values still 12-bit", max(runs_of(l)) <= 2)
-
-# --- 3.1.n: SP Raw = SP1200 without the output filter; Saturation = input drive in machine modes
-def hold_model(x, rate=26040.0):
-    out, ph, held = [], 0.0, 0.0
-    for v in x:
-        ph += rate / 48000.0
-        if ph >= 1.0:
-            ph -= 1.0
-            held = round(v * 2048) / 2048
-        out.append(held)
-    return out
-
-
-setup(0.0, interp=6)                           # SP Raw
-reset()
-x = sine(997, amp=0.4)
-l = run(x)[0]
-check("SP Raw: just the 26.04 kHz hold + 12 bits, no output filter", max(abs(a - b) for a, b in zip(l, hold_model(x))) < 1e-6)
-setup(0.0, interp=2)
-reset()
-e.uc.mem_write(OBJ + 0x60, bytes(0x14))
-l9 = run(x)[0]
-check("SP1200 (filtered) differs from SP Raw", max(abs(a - b) for a, b in zip(l9, hold_model(x))) > 1e-3)
-
-setup(0.0, interp=6)
-set_interp(6, sat=1000)
-reset()
-loud = sine(997, amp=0.8)
-l = run(loud)[0]
-post = 1 / (1 + 1.1)
-check(f"drive 100 %: +18 dB into a hard clip at full scale, level back ({max(abs(v) for v in l):.3f} peak = {post:.3f})",
-      abs(max(abs(v) for v in l) - round(post * 2048) / 2048) < 2e-3)
-flat = sum(1 for v in l if abs(abs(v) - max(abs(v) for v in l)) < 1e-3)
-check(f"drive 100 %: a loud loop keeps its level ({20 * math.log10(rms(l) / rms(loud)):+.1f} dB RMS)", abs(20 * math.log10(rms(l) / rms(loud))) < 2.0)
-check(f"drive 100 %: clipped flat tops ({flat} of {len(l)} samples at the ceiling)", flat > len(l) // 3)
-set_interp(6, sat=0)
-reset()
-l = run(loud)[0]
-check("drive 0 %: untouched (exactly the hold + 12 bits)", max(abs(a - b) for a, b in zip(l, hold_model(loud))) < 1e-6)
-set_interp(0, sat=1000)
-reset()
-l = run(sine(997))[0]
-check("Saturation in Normal Fidelity: no drive here (the warm saturation in od.c handles it)", all(abs(p - q) < 1e-7 for p, q in zip(l, sine(997))))
-print(f"\n{fails} failure(s)")
+print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)
