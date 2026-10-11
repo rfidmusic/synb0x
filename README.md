@@ -10,7 +10,7 @@ An unofficial feature mod for the **original 1010music Blackbox** (not the Black
 **Get new builds by email:** sign up at <https://justinjoe.com/blackbox-mod> and I'll send a note when a new build is
 out (new FX, fixes). That's all the list is for.
 
-## What it adds (build 3.1.E, `filter-env` branch)
+## What it adds (build 3.1.F, `filter-env` branch)
 
 - **Solo** in the mixer: MIX cycles Mixer → Mute → Solo. Tap pads to solo them (yellow).
 - **Slicer knobs**: on the waveform screen, bottom-left = slice Start, bottom-right = slice End, top-right = Zoom.
@@ -24,7 +24,7 @@ out (new FX, fixes). That's all the list is for.
   envelope; Sustain is a level) and Depth (-100..+100 = up to the cutoff's whole travel). It follows each voice's amp
   envelope: it starts with the note and releases when the amp envelope does (note off, one-shot end, choke).
 - **Filt tab**: the pad screen gains a Filt tab after Main with Filter, Res, Type, Depth / Attack, Decay, Sustain,
-  Release. Filter and Res leave the Main tab.
+  Release. Filter and Res leave the Main tab, which now reads Level, Pitch, Pan, Saturation / Attack, Decay, Sustain, Release.
 - **Modulation sources KEY and FENV**: KEY is key follow ((note - C3) / 60, the engine's own per-voice source that
   stock never listed); FENV is the voice's filter envelope, so it can also drive Pitch, Level, Pan and the rest.
 - **Saturation** (was Overdrive): soft saturation in place of the hard clip.

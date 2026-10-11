@@ -145,8 +145,20 @@ check("clamp: identical to stock except Filt (0x1d) kept for pad modes 0..3",
 check("tab press: ids 0x12f..0x134 accepted (cmp r3,#5)", e.r16(0x080B9496) == 0x2B05)
 mains = [struct.unpack("<8H", e.uc.mem_read(a, 16)) for a in
          (0x080EFC18, 0x080EFAB0, 0x080EF948, 0x080EF7E0, 0x080EF510, 0x080EF3A8, 0x080EF240, 0x080EF0D8, 0x080EEF70)]
-check("Main tab in all nine tables: Level, Pitch, -, - / Attack, Decay, Sustain, Release (no Filter, no Res)",
-      all(m == (4, 0x5C, 1, 1, 0x3C, 0x3E, 0x3F, 0x40) for m in mains), mains)
+check("Main tab in all nine tables: Level, Pitch, Pan, Saturation / Attack, Decay, Sustain, Release (no Filter, Res)",
+      all(m == (4, 0x5C, 0x62, 0xDB, 0x3C, 0x3E, 0x3F, 0x40) for m in mains), mains)
+
+
+def rows_stay(ids):
+    """The grid's own rule (FUN_080a87b6): after a refresh it leaves the bottom row if slots 2-3 hold no knob and the
+    top row if slots 0-1 hold none (id 1 = blank). Both halves need a knob for both rows to stay selectable."""
+    knob = [i not in (0, 1) for i in ids]
+    return (knob[0] or knob[1]) and (knob[2] or knob[3])
+
+
+check("Main tab: both knob rows stay selectable after a value change", all(rows_stay(m) for m in mains), mains)
+filt = struct.unpack("<8H", e.uc.mem_read(e.sym["filt_ids"], 16))
+check("Filt tab: both knob rows stay selectable after a value change", rows_stay(filt), filt)
 
 print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)

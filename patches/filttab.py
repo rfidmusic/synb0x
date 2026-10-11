@@ -44,7 +44,10 @@ def grid_check(at, old, reg, list_target):
 
 
 MAIN_OLD = struct.pack("<8H", 0x04, 0xC8, 0x5C, 0x11, 0x3C, 0x3E, 0x3F, 0x40)
-MAIN_NEW = struct.pack("<8H", 0x04, 0x5C, 0x01, 0x01, 0x3C, 0x3E, 0x3F, 0x40)   # Level, Pitch, blank, blank / A D S R
+# Level, Pitch, Pan, Saturation / A D S R (Pan and Saturation also stay on Conf). No blanks: after every value change
+# the grid (FUN_080a87b6) jumps from the bottom row back to the top when slots 2 and 3 hold no knob (and from the top
+# row to the bottom when slots 0 and 1 hold none), which made the amp envelope row unreachable with Level, Pitch, -, -.
+MAIN_NEW = struct.pack("<8H", 0x04, 0x5C, 0x62, 0xDB, 0x3C, 0x3E, 0x3F, 0x40)
 MAIN_TABLES = (0x080EFC18, 0x080EFAB0, 0x080EF948, 0x080EF7E0, 0x080EF510,      # Sample, Multisample, Clip, Slicer, Granular
                0x080EF3A8, 0x080EF240, 0x080EF0D8, 0x080EEF70)                  # the same four modes, empty-pad record
 
@@ -72,6 +75,6 @@ PATCHES = [
      bl(0x080B88A6, sym["filt_is_list_r2"]) + b16(0x080B88AA, 0x080B88EA, NE) + NOP),
     # re-entry clamp: the whole function -> filt_clamp (same arguments, returns to the caller)
     (0x080991A8, H("938803f4"), bw(0x080991A8, sym["filt_clamp"])),
-    # Main tab: Filter and Res move to Filt; Level, Pitch on the top row, the amp envelope stays on the bottom row
+    # Main tab: Filter and Res move to Filt; Level, Pitch, Pan, Saturation on top, the amp envelope stays on the bottom row
     *[(a, MAIN_OLD, MAIN_NEW) for a in MAIN_TABLES],
 ]
