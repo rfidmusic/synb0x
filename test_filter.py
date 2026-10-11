@@ -13,7 +13,7 @@ from unicorn.arm_const import UC_ARM_REG_R6, UC_ARM_REG_S0
 
 from emu import Emu
 
-e = Emu("out/solo+slice+filter+fenv+filttab+glide+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 
 OBJ, PARAMS, PAD, BUF, LBUF, RBUF, AMP = 0x24060000, 0x24061000, 0x24062000, 0x24063000, 0x24064000, 0x24066000, 0x24068000
 N = 64

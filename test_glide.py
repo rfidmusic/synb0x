@@ -13,7 +13,7 @@ from unicorn.arm_const import (UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_A
 
 from emu import RET, STACK, Emu
 
-IMG = "out/solo+slice+filter+fenv+filttab+glide+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 e.uc.mem_map(0x38800000, 0x1000)                 # backup SRAM
 e.uc.mem_map(0x58024000, 0x1000)                 # RCC + PWR

@@ -10,7 +10,7 @@ An unofficial feature mod for the **original 1010music Blackbox** (not the Black
 **Get new builds by email:** sign up at <https://justinjoe.com/blackbox-mod> and I'll send a note when a new build is
 out (new FX, fixes). That's all the list is for.
 
-## What it adds (build 3.1.G, `filter-env` branch)
+## What it adds (build 3.1.H, `filter-env` branch)
 
 - **Solo** in the mixer: MIX cycles Mixer → Mute → Solo. Tap pads to solo them (yellow).
 - **Slicer knobs**: on the waveform screen, bottom-left = slice Start, bottom-right = slice End, top-right = Zoom.
@@ -29,6 +29,7 @@ out (new FX, fixes). That's all the list is for.
   Time (0-100 on a curve, up to 10 s; a slide takes the same time whatever the interval). Always slides every note from
   the pad's last pitch; Legato only while another note of the pad is held, including the stock Legato switch's in-place
   retune.
+- **Startup screen** reads Synb0x instead of blackbox.
 - **Modulation sources KEY and FENV**: KEY is key follow ((note - C3) / 60, the engine's own per-voice source that
   stock never listed); FENV is the voice's filter envelope, so it can also drive Pitch, Level, Pan and the rest.
 - **Saturation** (was Overdrive): soft saturation in place of the hard clip.
@@ -65,7 +66,7 @@ Needs `arm-none-eabi-gcc` and Python 3. Put your stock image at `firmware/BLACKB
 
 ```
 ./build.sh
-python3 patch.py solo slice filter fenv filttab glide cpu od comp fx2 munchi cave
+python3 patch.py solo slice filter fenv filttab glide splash cpu od comp fx2 munchi cave
 ```
 
 That writes `out/<patchsets>/BLACKBOX.bin`. (On `main` the list is `solo slice duck chord cond filter cpu od comp seqfix

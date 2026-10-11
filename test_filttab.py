@@ -13,7 +13,7 @@ from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_
 
 from emu import RET, STACK, Emu
 
-IMG = "out/solo+slice+filter+fenv+filttab+glide+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 stock = Emu("firmware/BLACKBOX-3.1.9.bin", "out/cave.elf")
 P_FILTER, P_RES = 200, 0x11
