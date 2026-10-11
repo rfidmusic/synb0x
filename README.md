@@ -10,29 +10,31 @@ An unofficial feature mod for the **original 1010music Blackbox** (not the Black
 **Get new builds by email:** sign up at <https://justinjoe.com/blackbox-mod> and I'll send a note when a new build is
 out (new FX, fixes). That's all the list is for.
 
-## What it adds (build 3.1.n)
+## What it adds (build 3.1.E, `filter-env` branch)
 
 - **Solo** in the mixer: MIX cycles Mixer → Mute → Solo. Tap pads to solo them (yellow).
 - **Slicer knobs**: on the waveform screen, bottom-left = slice Start, bottom-right = slice End, top-right = Zoom.
-- **Pad-1 ducker**: four new modulation Sources (EXP1, EXP2, PUMP, LINR) that fire when pad 1 plays. Put your kick
-  on pad 1, set a negative Amount on another pad's Level, and you have sidechain pumping. About 0.65 dB per 1%.
-- **Chords on the Keys screen**: top-right knob picks a shape (Tri, 7th, 9th, Su2, Su4, 6th, Ad9, Pwr, Oct, Opn, Shl,
-  Qrt, m7, m9, Mj7). In-scale shapes follow the Keys Scale/Root. Chords record into sequences.
-- **Note conditions**: the piano roll's PLAY list gains 1:2 … 8:8 ("play the Ath of every B loops").
 - **Fidelity** (was Interp): sample-rate crunch plus machine modes SP1200, SP-12, S950, MPC60 and SP Raw, with
   drop-sample pitching. Machine modes work on Sample and Multisample pads.
-- **Filter**: 24 dB/oct state-variable filter; drive comes in as Res goes past noon.
+- **Filter**: 24 dB/oct state-variable filter; drive comes in as Res goes past noon. **Type** picks LP, HP or BP, and
+  the Filter knob is cutoff across its whole travel (far left 20 Hz, far right 20.5 kHz; new pads start fully open).
+  Presets saved before this build keep their Filter value, so a pad saved with the knob at centre (stock: filter off)
+  now loads as a low-pass at 640 Hz.
+- **Filter envelope**: per pad, per voice: Attack, Decay, Sustain, Release (0 ms to 60 s on a 0-100 curve like the amp
+  envelope; Sustain is a level) and Depth (-100..+100 = up to the cutoff's whole travel). It follows each voice's amp
+  envelope: it starts with the note and releases when the amp envelope does (note off, one-shot end, choke).
+- **Filt tab**: the pad screen gains a Filt tab after Main with Filter, Res, Type, Depth / Attack, Decay, Sustain,
+  Release. Filter and Res leave the Main tab.
+- **Modulation sources KEY and FENV**: KEY is key follow ((note - C3) / 60, the engine's own per-voice source that
+  stock never listed); FENV is the voice's filter envelope, so it can also drive Pitch, Level, Pan and the rest.
 - **Saturation** (was Overdrive): soft saturation in place of the hard clip.
 - **Master compressor models**: Stock, Glue, Punch, Opto, Squash, Limit, plus a Comp Thresh setting.
 - **Reverb Type**: Plate (stock) or Room.
 - **Delay Type**: Delay (stock) or Munchi (a port of the CHOMPI TEMPO granular delay).
-- **Sequencer fix**: a note added just ahead of the playhead plays on that pass.
 
 ### Known issues
 
 - Solo can stick: after un-soloing, pads may stay muted. Unmute them in Mute mode.
-- A note placed very close ahead of the playhead is still sometimes silent.
-- Chords need the pad out of Mono Poly Mode.
 - Presets saved with a Fidelity value on an older mod build may read a different value.
 
 ## Install
@@ -59,10 +61,11 @@ Needs `arm-none-eabi-gcc` and Python 3. Put your stock image at `firmware/BLACKB
 
 ```
 ./build.sh
-python3 patch.py solo slice duck chord cond filter cpu od comp seqfix fx2 munchi cave
+python3 patch.py solo slice filter fenv filttab cpu od comp fx2 munchi cave
 ```
 
-That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to the release. `python3 make_patch.py <image> <version>`
+That writes `out/<patchsets>/BLACKBOX.bin`. (On `main` the list is `solo slice duck chord cond filter cpu od comp seqfix
+fx2 munchi cave`, byte-identical to the 3.1.n release.) `python3 make_patch.py <image> <version>`
 turns an image into the release patch in `docs/`.
 
 How it works: the stock image is left as it is. New code (`src/`) is compiled and appended after it, and a handful of

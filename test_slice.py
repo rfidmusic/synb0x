@@ -12,7 +12,7 @@ import sys
 
 from emu import Emu
 
-e = Emu("out/solo+slice+filter+fenv+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 
 VIEW, MARKERS, MSG = 0x24060000, 0x24068000, 0x24069000
 BL, TR, BR = VIEW + 0x950, VIEW + 0xC30, VIEW + 0xF10

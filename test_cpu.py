@@ -9,7 +9,7 @@ import sys
 
 from emu import Emu
 
-e = Emu("out/solo+slice+filter+fenv+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 V = e.cstr(0x080CF290)                          # "3.1.x" of this build
 e.uc.mem_map(0xE0000000, 0x100000)
 CYC, STATE = 0xE0001004, 0x2405FFD0

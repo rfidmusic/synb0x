@@ -12,7 +12,7 @@ from unicorn.arm_const import UC_ARM_REG_R4, UC_ARM_REG_SP
 
 from emu import STACK, Emu
 
-e = Emu("out/solo+slice+filter+fenv+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
 e.uc.mem_map(0x38800000, 0x1000)
 e.uc.mem_map(0x58024000, 0x1000)
 STATE, POOL, OBJ, APPFX, ARR = 0x24040000, 0x24100000, 0x24041000, 0x24020088 + 0x2FC0, 0x24042000

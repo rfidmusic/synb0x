@@ -16,7 +16,7 @@ from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_SP
 
 from emu import Emu
 
-IMG = "out/solo+slice+filter+fenv+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 P_FILTER = 200
 P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH = range(0x1E1, 0x1E7)
