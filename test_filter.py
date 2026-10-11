@@ -373,6 +373,21 @@ lv = env_run(5)
 check("amp envelope idle: the envelope stays at 0", all(v == 0.0 for v in lv), lv)
 
 reset()
+setup(1.0, attack=0, decay=0, sustain=1000, release=0)
+env_run(1)
+amp(4)
+env_run(2)
+amp(2)                                            # gate again, amp envelope already past its attack
+lv = env_run(1)
+check("finished envelope restarts on a later gate", lv[0] == 1.0, lv)
+for n in (1, 255, 256, 513, 2048):
+    reset()
+    setup(knob_for(800), attack=300, depth=200)
+    l, _ = run(sine(500, n=n))
+    check(f"{n}-frame block: finite output, envelope advanced by {n} frames",
+          all(math.isfinite(v) for v in l) and abs(level() - n / (seconds(300) * FS)) < 1e-4, level())
+
+reset()
 setup(1.0, attack=300)
 amp(1)
 run([0.0] * 256, silent=True)

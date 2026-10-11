@@ -397,8 +397,11 @@ static void env_step(struct envstate *e, unsigned amp, const struct pad_cfg *c, 
     e->amp_last = (uint8_t)amp;
     switch (e->stage) {
     case ENV_IDLE:
-        if (!gate)
+    case ENV_DONE:                                   /* finished: a later gate (legato, amp past its attack) restarts */
+        if (!gate) {
+            e->level = 0.0f;
             return;
+        }
         e->stage = ENV_ATTACK;
         /* fall through */
     case ENV_ATTACK:
@@ -444,6 +447,7 @@ static void env_step(struct envstate *e, unsigned amp, const struct pad_cfg *c, 
         }
         break;
     default:
+        e->stage = ENV_IDLE;
         e->level = 0.0f;
         return;
     }
