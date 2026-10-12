@@ -448,6 +448,9 @@ struct envstate {
 };
 enum { ENV_IDLE, ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
 #define ENV(obj) ((struct envstate *)((obj) + 0x44))
+/* envstate pad[0]: the filter was skipped mid-note at its open end (1: LP side, 2: HP side); zeroed at voice start */
+#define BYPASSED(env) ((env)->pad[0])
+#define XFADE 32                 /* frames of dry -> filtered when the filter starts again mid-note */
 #define SUB      32              /* frames per envelope / cutoff step */
 #define MAX_SUBS 16
 
@@ -601,8 +604,18 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     float pos = (knob + 1.0f) * 0.5f;                       /* cutoff position 0..1 on the stock curve */
     pos = pos < 0.0f ? 0.0f : pos > 1.0f ? 1.0f : pos;
     int type = cfg.type;
-    int active = cfg.depth != 0.0f || type == TYPE_BP || (type == TYPE_LP ? pos < 0.999f : pos > 0.001f);
+    /* skipped only when it cannot change the sound: LP fully open or HP fully closed, no envelope depth. While it runs,
+       it stops only once its cutoff glide has reached that end (stopping as soon as the knob does jumps from filtered to
+       dry: a click). */
+    int lp_open = type == TYPE_LP && pos >= 0.999f, hp_open = type == TYPE_HP && pos <= 0.001f;
+    if (st->on && st->magic == MAGIC) {
+        lp_open = lp_open && env->base >= 0.999f;
+        hp_open = hp_open && env->base <= 0.001f;
+    }
+    int active = cfg.depth != 0.0f || !(lp_open || hp_open);
     if (!active) {
+        if (st->on)
+            BYPASSED(env) = lp_open ? 1 : 2;
         st->on = 0;
         if (!crunching)
             return;
@@ -642,10 +655,18 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     if (q > 40.0f)
         q = 40.0f;
     float r = 1.0f / q;
+    int xfade = 0;
     if (!st->on) {
         st->r = r;
         st->drive = drive;
-        env->base = pos;
+        if (BYPASSED(env)) {
+            /* starting again mid-note: from the open end it stopped at, gliding to the knob, faded in from dry */
+            env->base = BYPASSED(env) == 1 ? 1.0f : 0.0f;
+            xfade = 1;
+            BYPASSED(env) = 0;
+        } else {
+            env->base = pos;                                 /* a new note starts where the knob is */
+        }
         for (int k = 0; k < 2; k++)
             st->s1[k][0] = st->s1[k][1] = st->s2[k][0] = st->s2[k][1] = 0.0f;
         st->on = 1;
@@ -671,7 +692,13 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
             if (!ch[c])
                 continue;
             float *sv[4] = {&st->s1[0][c], &st->s2[0][c], &st->s1[1][c], &st->s2[1][c]};
+            float dry[XFADE];
+            int xl = xfade && k == 0 ? (len < XFADE ? len : XFADE) : 0;
+            for (int i = 0; i < xl; i++)
+                dry[i] = ch[c][at + i];
             svf2(ch[c] + at, len, g, st->r, sv, type, st->drive);
+            for (int i = 0; i < xl; i++)                    /* dry -> filtered over the first XFADE frames */
+                ch[c][at + i] = dry[i] + (ch[c][at + i] - dry[i]) * ((float)(i + 1) / (float)xl);
         }
     }
 }

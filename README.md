@@ -15,7 +15,7 @@ sources. Firmware version: **3.1.s** (released earlier the same day as 3.1.9-syn
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `9722033fbc623676c4df243711e66d217045fc3faff3430e4e9bdc9cb80cad1b` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `a578ef3100749174e8f60250005638b929abdfc416378b00a9b6f455f63a4f9d` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -101,7 +101,10 @@ now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock fir
 
 - The Filt tab's **Release** knob did not keep its value (it snapped back to 30 at the next note) and flipped a hidden
   Keys-screen switch when turned: it was on a parameter id that stock firmware reserves. Moved to a free id.
-- The **CPU meter** never showed its numbers: it skipped the version labels because they live in SDRAM.
+- The **CPU meter** skipped the version labels because they live in SDRAM (the numbers still do not show on the device;
+  under investigation).
+- **Clicks** when the Filter knob was turned to fully open (LP) or fully closed (HP), where the filter switches off,
+  and back mid-note: it now switches off only once its cutoff has glided all the way, and fades back in.
 
 ### Known issues
 

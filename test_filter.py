@@ -435,6 +435,40 @@ for b in range(4):
     err = max(err, max(abs(p - q) for p, q in zip(l, ref)))
 check("a moving envelope steps the cutoff every 32 frames (equals the model)", err < 1e-4, err)
 
+# --- no click turning Filter to fully open (where the filter stops) and back mid-note
+def click_run(blocks, control):
+    OBJA = OBJ - 0x7C
+    note_on()
+    out = []
+    for b_ in range(blocks):
+        control(b_)
+        e.uc.mem_write(OBJA, bytes([3]))
+        x = [0.4 * math.sin(2 * math.pi * 110 * (b_ * 256 + i) / FS) for i in range(256)]
+        e.uc.mem_write(LBUF, struct.pack("<256f", *x))
+        e.uc.mem_write(BUF, struct.pack("<IIIIBB", 256, 256, LBUF, 0, 0, 0))
+        e.call("filter_process", OBJ, BUF, PAD, OBJA)
+        out += struct.unpack("<256f", e.uc.mem_read(LBUF, 1024))
+    d = [out[i] - 3 * out[i - 1] + 3 * out[i - 2] - out[i - 3] for i in range(4 * 256, len(out))]
+    return max(abs(v) for v in d)
+
+
+def ctl_open(b_):
+    values[PARAMS + 8], values[PARAMS + 0x44] = (1.0 if (b_ // 8) % 2 else 0.3), 0.5
+
+
+setup(0.3, 0.5)
+worst = click_run(64, ctl_open)
+check(f"no click turning Filter to fully open (filter stops) and back (worst step {worst:.4f})", worst < 0.003, worst)
+
+
+def ctl_open_hp(b_):
+    values[PARAMS + 8], values[PARAMS + 0x44] = (-1.0 if (b_ // 8) % 2 else -0.3), 0.5
+
+
+setup(-0.3, 0.5, ftype=HP)
+worst = click_run(64, ctl_open_hp)
+check(f"same for HP turned fully closed and back (worst step {worst:.4f})", worst < 0.003, worst)
+
 # --- crunch
 reset()
 setup(1.0, interp=7 + 1)                       # 12k, filter skipped
