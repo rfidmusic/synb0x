@@ -1,0 +1,78 @@
+# Builds the Synb0x Preset Converter app (preset_converter_gui.py + convert_presets.py) for Windows and macOS.
+# No firmware is involved: the app only rewrites preset.xml files. Run it from the Actions tab (Run workflow), or it
+# runs when the converter changes; the apps are the run's artifacts. With a release tag given, they are also attached
+# to that release.
+name: Preset Converter apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the apps to this release (e.g. 3.1.t); leave empty to only build"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - convert_presets.py
+      - preset_converter_gui.py
+      - test_convert_presets.py
+      - .github/workflows/preset-converter.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: Synb0x-Preset-Converter-Windows
+          - os: macos-latest
+            artifact: Synb0x-Preset-Converter-macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyQt6 and PyInstaller
+        run: python -m pip install PyQt6==6.11.0 pyinstaller==6.22.3
+
+      - name: Test the converter
+        run: python test_convert_presets.py
+
+      - name: Check the window opens (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -c "import sys; from PyQt6.QtWidgets import QApplication; import preset_converter_gui as g; a = QApplication([]); w = g.Window(); w.show(); print('ok')"
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name "Synb0x Preset Converter" --exclude-module tkinter preset_converter_gui.py
+          New-Item -ItemType Directory -Force out | Out-Null
+          Compress-Archive -Path "dist/Synb0x Preset Converter.exe" -DestinationPath "out/${{ matrix.artifact }}.zip"
+
+      - name: Build (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --windowed --name "Synb0x Preset Converter" --osx-bundle-identifier com.rfidmusic.synb0x.presetconverter --exclude-module tkinter preset_converter_gui.py
+          mkdir -p out
+          ditto -c -k --keepParent "dist/Synb0x Preset Converter.app" "out/${{ matrix.artifact }}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: out/${{ matrix.artifact }}.zip
+
+      - name: Attach to the release
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release_tag }}" "out/${{ matrix.artifact }}.zip" --clobber

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Convert Blackbox presets saved before Synb0x (stock 3.1.9, blackbox-mod 3.1.n) so they sound the same on Synb0x.
 
-    python3 convert_presets.py PRESET_FOLDER [PRESET_FOLDER ...]
-    python3 convert_presets.py SDCARD/Presets            (every preset folder inside it)
+    python3 convert_presets.py PATH [PATH ...]               copies: "<name> syn" next to each preset
+    python3 convert_presets.py --in-place PATH [PATH ...]    rewrite each preset.xml where it is
 
-Each preset is copied to a new folder next to it, "<name> syn", with the converted preset.xml; the original folder is
-never changed. Presets already saved on Synb0x (3.1.s, 3.1.t or 3.1.9-syn) are skipped: Synb0x saves its settings
-("fenvtype", "fenvmorph", ...) on every pad, so a pad without them was saved before Synb0x.
+PATH is a preset folder, a preset.xml, or any folder above them (a Presets folder, the whole SD card): every
+preset.xml below it is found. By default each older preset is copied to a new folder next to it, "<name> syn", with
+the converted preset.xml, and the original is never changed. With --in-place each older preset.xml is rewritten where
+it is and the original kept beside it as preset.xml.bak (to undo: delete preset.xml, rename preset.xml.bak back).
+Presets already saved on Synb0x (3.1.s, 3.1.t or 3.1.9-syn), or converted before, are skipped: Synb0x saves its
+settings ("fenvtype", "fenvmorph", ...) on every pad, so a pad without them was saved before Synb0x.
 
 Stock's Filter knob (dualfilcutoff, -1000..1000) is off at centre, low-pass left of it (cutoff = curve(knob + 1)) and
 high-pass right of it (cutoff = curve(knob)); Synb0x's is cutoff across its whole travel (curve((knob + 1) / 2)) on the
@@ -80,60 +83,130 @@ def convert_cell(head, body, notes):
     return body, True
 
 
-def convert(folder):
+def inspect(folder, dest_root=None, in_place=False):
+    """Read one preset folder without writing anything. Returns None if it holds no preset.xml, else a dict:
+    status "convert" (out = the new preset.xml, dest = where it goes, pads, notes), "synb0x" (saved on Synb0x
+    already), "copy" (a converted copy itself) or "exists" (its copy is already there). in_place: dest is the folder
+    itself."""
     folder = os.path.normpath(folder)
     xml = os.path.join(folder, "preset.xml")
-    name = os.path.basename(folder)
     if not os.path.isfile(xml):
         return None
-    if name.endswith(SUFFIX):
-        print(f"{name}: skipped (already a converted copy)")
-        return False
+    name = os.path.basename(folder)
+    dest = folder if in_place else os.path.join(dest_root or os.path.dirname(folder), name + SUFFIX)
+    info = {"folder": folder, "name": name, "dest": dest, "pads": 0, "notes": [], "out": None, "in_place": in_place}
+    if name.endswith(SUFFIX) and not in_place:
+        return dict(info, status="copy")
     data = open(xml, "rb").read()
-    notes, changed = [], 0
 
     def cell(m):
-        nonlocal changed
-        body, did = convert_cell(m.group(1), m.group(2), notes)
-        changed += did
+        body, did = convert_cell(m.group(1), m.group(2), info["notes"])
+        info["pads"] += did
         return m.group(1) + body + m.group(3)
 
     out = CELL.sub(cell, data)
-    if not changed:
-        print(f"{name}: skipped (saved on Synb0x already, or no pads)")
+    if not info["pads"]:
+        return dict(info, status="synb0x", notes=[])
+    if not in_place and os.path.exists(dest):
+        return dict(info, status="exists")
+    return dict(info, status="convert", out=out)
+
+
+def backup_name(folder):
+    """preset.xml.bak, or .bak2, .bak3 ... if an earlier backup is there (never overwrite one)."""
+    b, n = os.path.join(folder, "preset.xml.bak"), 1
+    while os.path.exists(b):
+        n += 1
+        b = os.path.join(folder, f"preset.xml.bak{n}")
+    return b
+
+
+def write(info):
+    """Write an inspect() result with status "convert": the copy, or (in place) the new preset.xml with the original
+    kept as preset.xml.bak. Returns the backup's path in place, else None."""
+    if not info["in_place"]:
+        shutil.copytree(info["folder"], info["dest"])
+        with open(os.path.join(info["dest"], "preset.xml"), "wb") as f:
+            f.write(info["out"])
+        return None
+    xml = os.path.join(info["folder"], "preset.xml")
+    if b"fenvtype=" in open(xml, "rb").read():       # changed since it was inspected: leave it
+        raise RuntimeError("preset.xml was already converted")
+    bak, tmp = backup_name(info["folder"]), xml + ".new"
+    shutil.copy2(xml, bak)
+    with open(tmp, "wb") as f:
+        f.write(info["out"])
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, xml)                              # the original is in the backup before it is replaced
+    return bak
+
+
+def presets_in(path):
+    """The preset folders a path names: a preset.xml's folder, the folder itself, or every folder below it that holds
+    a preset.xml (a Presets folder, a whole SD card). Hidden and system folders are skipped."""
+    path = os.path.normpath(path)
+    if os.path.isfile(path):
+        return [os.path.dirname(os.path.abspath(path))] if os.path.basename(path).lower() == "preset.xml" else []
+    found = []
+    for root, dirs, files in os.walk(path):
+        dirs[:] = sorted(d for d in dirs if not d.startswith((".", "$")) and d != "System Volume Information")
+        if "preset.xml" in files:
+            found.append(root)
+    return found
+
+
+def describe(info):
+    """One line for an inspect() result."""
+    return {"convert": f"{info['pads']} pad(s) to convert",
+            "synb0x": "skipped (saved on Synb0x already)",
+            "copy": "skipped (already a converted copy)",
+            "exists": f"skipped ({os.path.basename(info['dest'])} already exists; delete or rename it to convert "
+                      "again)"}[info["status"]]
+
+
+def convert(folder, in_place=False):
+    info = inspect(folder, in_place=in_place)
+    if info is None:
+        return None
+    if info["status"] != "convert":
+        print(f"{info['name']}: {describe(info)}")
         return False
-    dest = folder + SUFFIX
-    if os.path.exists(dest):
-        print(f"{name}: skipped ({os.path.basename(dest)} already exists; delete or rename it to convert again)")
-        return False
-    shutil.copytree(folder, dest)
-    with open(os.path.join(dest, "preset.xml"), "wb") as f:
-        f.write(out)
-    print(f"{name} -> {os.path.basename(dest)}: {changed} pad(s) converted")
-    for n in notes:
+    bak = write(info)
+    if bak:
+        print(f"{info['name']}: {info['pads']} pad(s) converted in place (original kept as {os.path.basename(bak)})")
+    else:
+        print(f"{info['name']} -> {os.path.basename(info['dest'])}: {info['pads']} pad(s) converted")
+    for n in info["notes"]:
         print(n)
     return True
 
 
 def main(args):
+    in_place = "--in-place" in args
+    args = [a for a in args if a != "--in-place"]
     if not args:
         print(__doc__.split("\n\n")[1])
         return 2
-    done = 0
+    done, seen = 0, set()
     for a in args:
-        if not os.path.isdir(a):
-            print(f"{a}: not a folder")
+        if not os.path.exists(a):
+            print(f"{a}: not found")
             continue
-        r = convert(a)
-        if r is None:                                   # a Presets folder: every preset in it
-            for sub in sorted(os.listdir(a)):
-                p = os.path.join(a, sub)
-                if os.path.isdir(p) and not sub.endswith(SUFFIX) and convert(p):
-                    done += 1
-        elif r:
-            done += 1
-    print(f"\n{done} preset(s) converted. Copy the \"...{SUFFIX}\" folders to the card's Presets folder; the originals "
-          "are unchanged.")
+        found = presets_in(a)
+        if not found:
+            print(f"{a}: no preset.xml found")
+        for f in found:
+            if f in seen:
+                continue
+            seen.add(f)
+            if convert(f, in_place):
+                done += 1
+    if in_place:
+        print(f"\n{done} preset(s) converted in place; each original is kept as preset.xml.bak beside it.")
+    else:
+        print(f"\n{done} preset(s) converted. Copy the \"...{SUFFIX}\" folders to the card's Presets folder; the "
+              "originals are unchanged.")
     return 0
 
 
