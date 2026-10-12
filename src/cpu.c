@@ -122,7 +122,10 @@ static void report(void)
     compose(buf);
     for (int i = 0; i < LABELS; i++) {
         uint8_t *t = M->text[i];
-        if ((uint32_t)t < 0x24000000u || (uint32_t)t >= 0x24080000u)
+        /* the screens are one large object the stock boot code takes from the SDRAM pool (FUN_080443a8, 593 KB), so
+           their labels live in SDRAM; AXI RAM is accepted too. Anything else is not a label of ours. */
+        uint32_t a = (uint32_t)t;
+        if (!((a >= 0x24000000u && a < 0x24080000u) || (a >= 0xc0000000u && a < 0xc4000000u)))
             continue;
         const char *c = (const char *)(t + TEXT_CHARS), *sv = short_version();
         int ours = c[0] == '3' && c[1] == '.' && c[2] == '1' && c[3] == '.';     /* full version */

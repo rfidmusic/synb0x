@@ -14,7 +14,10 @@ V = e.cstr(e.sym["mod_version"])                # the version this build shows
 SV = V.split("-")[-1]                           # with numbers: the part after the "-"
 e.uc.mem_map(0xE0000000, 0x100000)
 CYC, STATE = 0xE0001004, 0x2405FFD0
-TEXT = [0x24060000, 0x24061000, 0x24062000]
+# The screens are one object in the SDRAM pool on the device (FUN_080443a8 -> FUN_0804436c), so their labels are there;
+# one label stays in AXI RAM to keep that path covered.
+e.uc.mem_map(0xC0100000, 0x10000)
+TEXT = [0xC0100000, 0xC0101000, 0x24062000]
 clock = {"busy": 0, "idle": 0, "got": 1}
 
 
@@ -65,7 +68,7 @@ def check(label, cond, detail=""):
 e.uc.mem_write(STATE, b"\xa5" * 36)            # patch RAM is not zeroed at boot
 e.w32(CYC, 123456)
 labels()
-check("labels built at boot are remembered (all three) and keep the version text", all(e.r32(STATE + 24 + 4 * i) == TEXT[i] for i in range(3)) and text(1) == V, [hex(e.r32(STATE + 24 + 4 * i)) for i in range(3)])
+check("labels built at boot are remembered (all three) and keep the version text", all(e.r32(STATE + 24 + 4 * i) & 0xFFFFFFFF == TEXT[i] for i in range(3)) and text(1) == V, [hex(e.r32(STATE + 24 + 4 * i)) for i in range(3)])
 check("cycle counter switched on (TRCENA, unlock, CYCCNTENA)", e.r32(0xE000EDFC) & (1 << 24) and e.r32(0xE0001FB0) & 0xFFFFFFFF == 0xC5ACCE55 and e.r32(0xE0001000) & 1)
 
 PERIOD = 2_560_000                              # 5.33 ms at 480 MHz
@@ -108,6 +111,8 @@ e.w32(STATE + 24, 0x08001234)
 for i in range(188):
     block(PERIOD // 2, PERIOD // 2)
 check("a pointer outside RAM is skipped, the others still update", text(1) == SV + " 50/50%")
+check("labels in SDRAM (where the device's screens are) get the reading", text(0) == SV + " 50/50%" and text(1) == SV + " 50/50%",
+      (text(0), text(1)))
 
 # --- the global cell's name: what the screens actually show
 APP, ADDR, INFO = 0x24020088, 0x24070000, 0x24071000
