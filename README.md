@@ -2,8 +2,8 @@
 
 An unofficial feature mod for the **original 1010music Blackbox** (not the Blackbox 2), built on stock firmware 3.1.9.
 Synb0x is a fork of [j3threejay/blackbox-mod](https://github.com/j3threejay/blackbox-mod) by Justin Joe (build 3.1.n):
-it keeps most of that mod, drops four of its features and adds a synth-style filter section, glide and two modulation
-sources. Firmware version: **3.1.s** (released earlier the same day as 3.1.9-syn).
+it keeps most of that mod, drops four of its features and adds a synth-style filter section with a modulatable
+LP / notch / HP morph, glide and two modulation sources. Firmware version: **3.1.t** (previous release: 3.1.s).
 
 > **Not affiliated with, endorsed by, or supported by 1010music.** This repository does not contain 1010music's
 > firmware. You supply your own copy, downloaded from 1010music, and patch it yourself. Use at your own risk: this is
@@ -15,7 +15,7 @@ sources. Firmware version: **3.1.s** (released earlier the same day as 3.1.9-syn
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `9722033fbc623676c4df243711e66d217045fc3faff3430e4e9bdc9cb80cad1b` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `3f3b9c63f6ee6f4662917b4a42c39b5e4f8a4feb9173f38a1ce610b294ceb0ed` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -25,7 +25,8 @@ certutil -hashfile BLACKBOX.bin SHA256   # Windows
 ```
 
 The same value is in [`SHA256SUMS`](SHA256SUMS) (`shasum -a 256 -c SHA256SUMS` next to your patched file) and in the
-patch file itself (`docs/blackbox-mod-3.1.s.json`, `output_sha256`).
+patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier releases (3.1.s:
+`9722033fbc623676c4df243711e66d217045fc3faff3430e4e9bdc9cb80cad1b`) are on their tags and release pages.
 
 ## Install
 
@@ -36,28 +37,30 @@ patch file itself (`docs/blackbox-mod-3.1.s.json`, `output_sha256`).
    python3 apply.py path/to/BLACKBOX.bin
    ```
 
-   It writes `out/blackbox-mod-3.1.s/BLACKBOX.bin` and prints its SHA-256, which must match the table above. It
+   It writes `out/blackbox-mod-3.1.t/BLACKBOX.bin` and prints its SHA-256, which must match the table above. It
    refuses to run on anything but the stock 3.1.9 file, and refuses to overwrite it.
 3. Keep the stock `BLACKBOX.bin` somewhere safe. That file is your way back.
 4. Copy the patched `BLACKBOX.bin` to the root of the Blackbox's microSD card and install it the way you install any
    1010music firmware update (hold BACK + INFO while powering on).
-5. The startup screen and TOOLS show **3.1.s**.
+5. The startup screen and TOOLS show **3.1.t**.
 
 **To go back to stock:** put the stock `BLACKBOX.bin` on the card and install it the same way.
 
 ## What Synb0x adds
 
-- **Filter Type**: a new Type control picks **LP, HP or BP** (24 dB/oct state-variable filter, Res drive past noon as
-  before). The Filter knob is now cutoff across its whole travel: far left 20 Hz, far right 20.5 kHz, shown as
-  **0-100 %**; new pads start fully open.
+- **Filter Morph**: a Morph knob moves the 24 dB/oct state-variable filter continuously from **LP (0 %)** through a
+  **notch (50 %)** to **HP (100 %)**, at an even level (LP stays full while HP comes in, then the reverse), and is a
+  **modulation destination**: LFO, VEL, KEY, FENV and the MIDI sources (pitch bend, mod wheel, volume, pan) move it
+  per voice. Res drives past noon as before. The Filter knob is cutoff across its whole travel: far left 20 Hz, far
+  right 20.5 kHz, shown as **0-100 %**; new pads start fully open.
 - **Filter envelope**, per pad and per voice: **Attack, Decay, Sustain, Release** (0 ms to 60 s on a 0-100 curve like
   the amp envelope; Sustain is a level) and **Depth** (-100..+100, up to the cutoff's whole travel). It follows each
   voice's amp envelope: it starts with the note and releases when the amp envelope does (note off, one-shot end, choke).
-- **Filt tab** on the pad screen, right after Main: Filter, Res, Type, Depth / Attack, Decay, Sustain, Release, with
+- **Filt tab** on the pad screen, right after Main: Filter, Res, Morph, Depth / Attack, Decay, Sustain, Release, with
   modulation indicators. Main now reads Level, Pitch, Pan, Saturation / Attack, Decay, Sustain, Release.
 - **Modulation sources KEY and FENV** in every pad's Source list: KEY is key follow ((note - C3) / 60, the engine's own
   per-voice source that stock never listed); FENV is the voice's filter envelope, so it can also drive Pitch, Level,
-  Pan and the rest.
+  Pan, Morph and the rest.
 - **Glide** (sample and multisample pads), on the Conf tab after Poly Mode: **Glide** Off / Always / Legato and
   **Glide Time** (0-100 on a curve, up to 10 s; a slide takes the same time whatever the interval). Always slides every
   note from the pad's last pitch; Legato only while another note of the pad is held, including the stock Legato
@@ -75,38 +78,43 @@ patch file itself (`docs/blackbox-mod-3.1.s.json`, `output_sha256`).
 - **Master compressor models**: Stock, Glue, Punch, Opto, Squash, Limit, plus a Comp Thresh setting.
 - **Reverb Type**: Plate (stock) or Room.
 - **Delay Type**: Delay (stock) or Munchi (a port of the CHOMPI TEMPO granular delay), with its own Duck control.
-- **CPU meter** next to the version: average / worst block of the last second, as `3.1.s avg/peak%`.
+- **CPU meter** next to the version: average / worst block of the last second, as `3.1.t avg/peak%` (not showing yet:
+  see Known issues).
 
 ## Differences from blackbox-mod 3.1.n
 
-| | blackbox-mod 3.1.n | Synb0x 3.1.s |
+| | blackbox-mod 3.1.n | Synb0x 3.1.t |
 |---|---|---|
 | Pad-1 ducker (EXP1 / EXP2 / PUMP / LINR sources) | yes | **removed** |
 | Chords on the Keys screen | yes | **removed** |
 | Note conditions (1:2 … 8:8) | yes | **removed** |
 | Sequencer fix (notes just ahead of the playhead) | yes | **removed** |
-| Filter knob | centre = off, left LP, right HP | **cutoff**, 0-100 %; **Type** LP / HP / BP |
+| Filter knob | centre = off, left LP, right HP | **cutoff**, 0-100 %; **Morph** LP → notch → HP, modulatable |
 | Filter envelope, Filt tab, KEY / FENV sources, Glide | – | **new** |
 | Main tab | Level, Filter, Pitch, Res / A D S R | Level, Pitch, Pan, Saturation / A D S R |
 | Clip / slicer pads, second voice | Fidelity read another pad's setting | **fixed** |
 | Pad settings capacity | 64 entries | 72 (the new settings need room) |
-| Version shown | 3.1.n | 3.1.s |
+| Version shown | 3.1.n | 3.1.t |
 | Browser patcher | yes | no: Python `apply.py` only |
 
-**Presets:** they load. Synb0x's new settings save with the pad; presets made before it get the defaults (Type LP,
-envelope Depth 0, Glide Off). One change to know about: a pad saved with the Filter knob at centre (stock: filter off)
+**Presets:** they load. Synb0x's new settings save with the pad; presets made before it get the defaults (Morph LP,
+envelope Depth 0, Glide Off). Presets from 3.1.s (or 3.1.9-syn) with Type HP load as Morph 100 %; Type BP, which Morph
+no longer has, loads as Morph 50 % (the notch), so re-set those pads. The conversion happens the first time the pad
+plays; save the preset to keep it. One change to know about: a pad saved with the Filter knob at centre (stock: filter off)
 now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock firmware ignores the extra settings.
 
 ### Fixed in the 3.1.s update
 
 - The Filt tab's **Release** knob did not keep its value (it snapped back to 30 at the next note) and flipped a hidden
   Keys-screen switch when turned: it was on a parameter id that stock firmware reserves. Moved to a free id.
-- The **CPU meter** never showed its numbers: it skipped the version labels because they live in SDRAM.
+- The **CPU meter** skipped the version labels because they live in SDRAM (the numbers still do not show: see
+  Known issues).
 
 ### Known issues
 
 - Solo can stick: after un-soloing, pads may stay muted. Unmute them in Mute mode.
 - Presets saved with a Fidelity value on an older mod build may read a different value.
+- The **CPU meter** numbers do not show on the device yet (the version shows alone); under investigation.
 
 ## Build from source
 
@@ -118,12 +126,12 @@ Needs `arm-none-eabi-gcc` and Python 3. Put your stock image at `firmware/BLACKB
 python3 patch.py solo slice filter fenv filttab glide splash cpu od comp fx2 munchi cave
 ```
 
-That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to 3.1.s (the SHA-256 above) with Homebrew's
-arm-none-eabi-gcc 16.2. `python3 make_patch.py <image> 3.1.s` turns an image into the release patch in `docs/`.
+That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to 3.1.t (the SHA-256 above) with Homebrew's
+arm-none-eabi-gcc 16.2. `python3 make_patch.py <image> 3.1.t` turns an image into the release patch in `docs/`.
 
 How it works: the stock image is left as it is. New code (`src/`) is compiled and appended after it, and a handful of
 call sites and table entries (`patches/`) are redirected to the new code. The Synb0x parts are `src/fenv.c` (filter
-parameters, KEY / FENV routing), `src/filter.c` (filter Type and envelope), `src/filt_tab.c` (Filt tab),
+parameters, KEY / FENV routing), `src/filter.c` (filter Morph, its modulation, and the envelope), `src/filt_tab.c` (Filt tab),
 `src/glide.c` (glide) and their `patches/`.
 
 Tests (`test_*.py`) run the patched functions under Unicorn (`pip install unicorn`); `for t in test_*.py; do python3
