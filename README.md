@@ -15,7 +15,7 @@ sources. Firmware version: **3.1.s** (released earlier the same day as 3.1.9-syn
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `a578ef3100749174e8f60250005638b929abdfc416378b00a9b6f455f63a4f9d` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `0305408ed409889d5eb8f736131c6c4e2f607d99aaf79336140656eed1218bb3` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -105,11 +105,33 @@ now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock fir
   under investigation).
 - **Clicks** when the Filter knob was turned to fully open (LP) or fully closed (HP), where the filter switches off,
   and back mid-note: it now switches off only once its cutoff has glided all the way, and fades back in.
+- **Less CPU**: the soft clipping in the filter's Res drive and in Saturation no longer branches per sample (the
+  M7's min / max instructions instead): the filter at high Res takes 23 % less, Saturation 14 % less. Same sound.
 
 ### Known issues
 
 - Solo can stick: after un-soloing, pads may stay muted. Unmute them in Mute mode.
 - Presets saved with a Fidelity value on an older mod build may read a different value.
+
+## CPU use
+
+Measured under the Unicorn emulator on the same audio for stock 3.1.9 and this build: executed instructions per
+256-frame block (5.33 ms), the code the mod replaces or wraps on the audio path. Instructions are not cycles, so these
+compare builds rather than predict the load on the device (the on-screen CPU meter does not work yet).
+
+| Per voice, unless noted | Stock 3.1.9 | Synb0x 3.1.s |
+|---|---|---|
+| Filter off (stock: knob centred; Synb0x: fully open, skipped) | 33 | 919 |
+| Filter running, stereo, Res at default | 6,325 | 13,222 |
+| Filter running, mono | 3,234 | 7,533 |
+| Filter running, stereo, Res 90 % (drive) | 6,325 | 21,046 |
+| Filter envelope moving | – | no extra |
+| Sample reader, 256 frames at 1.5x pitch | 6,673 | 6,741 |
+| Saturation / Overdrive at 50 %, per pad | 11,209 | 12,419 |
+
+The 24 dB, two-stage filter costs about twice the stock 12 dB biquad while it runs (3.3x at high Res); off, it costs
+next to nothing. As a rough scale, sixteen voices all filtering at once use about 4 % more of the audio budget than
+stock (about 9 % more at high Res), assuming a 480 MHz core at about one instruction per cycle.
 
 ## Build from source
 
