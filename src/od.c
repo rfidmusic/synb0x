@@ -89,7 +89,7 @@ static float log2_approx(float x)
 /* Soft clip: unity slope at zero, flat at |u| = 1.5, ceiling 1. */
 static inline __attribute__((always_inline)) float clip(float u)
 {
-    u = u > 1.5f ? 1.5f : u < -1.5f ? -1.5f : u;
+    u = __builtin_fminf(__builtin_fmaxf(u, -1.5f), 1.5f);    /* vmaxnm / vminnm: no branch in the sample loop */
     return u * (1.0f - 0.148148f * u * u);
 }
 

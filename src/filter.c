@@ -191,7 +191,7 @@ static void crunch(struct fstate *st, float **ch, int n, float rate)
 static inline __attribute__((always_inline)) float soft(float x, float inv_t, float t)
 {
     float u = x * inv_t;
-    u = u > 1.5f ? 1.5f : u < -1.5f ? -1.5f : u;
+    u = __builtin_fminf(__builtin_fmaxf(u, -1.5f), 1.5f);    /* vmaxnm / vminnm: no branch in the sample loop */
     return t * u * (1.0f - 0.148148f * u * u);
 }
 
