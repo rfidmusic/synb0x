@@ -15,7 +15,7 @@ LP / notch / HP morph, glide and two modulation sources. Firmware version: **3.1
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `3f3b9c63f6ee6f4662917b4a42c39b5e4f8a4feb9173f38a1ce610b294ceb0ed` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `c2908f0817b4f133d7a4bd9e16ba8347bf49cb81ff03d9386170c5d163aeab87` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -102,6 +102,12 @@ envelope Depth 0, Glide Off). Presets from 3.1.s (or 3.1.9-syn) with Type HP loa
 no longer has, loads as Morph 50 % (the notch), so re-set those pads. The conversion happens the first time the pad
 plays; save the preset to keep it. One change to know about: a pad saved with the Filter knob at centre (stock: filter off)
 now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock firmware ignores the extra settings.
+
+### Fixed in the 3.1.t update
+
+- **Clicks**: turning Filter to fully open (where the filter switches off) and back mid-note clicked loudly, and moving
+  Morph (by hand or by an LFO) made small zipper clicks. The filter now switches off only once its cutoff has glided
+  all the way, fades back in when it restarts, and ramps the Morph mix sample by sample.
 
 ### Fixed in the 3.1.s update
 
