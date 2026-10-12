@@ -31,7 +31,13 @@ patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier rel
 ## Install
 
 1. Download **blackbox 3.1.9** from <https://1010music.com/downloads> and unzip it. You need the `BLACKBOX.bin` inside.
-2. With Python 3 (nothing to install):
+2. Either use the **Synb0x Firmware Patcher** app (Windows or macOS): download `Synb0x-Firmware-Patcher-Windows.zip`
+   or `-macOS.zip` from the 3.1.t release, unzip and open it, choose the stock `BLACKBOX.bin`, pick 3.1.t or 3.1.s and
+   where to save (the SD card's root installs it there), then Make Synb0x Firmware. It checks the stock file and the
+   result by SHA-256 like `apply.py`, and contains no firmware. The apps aren't signed: on macOS right-click the app
+   and choose Open the first time; on Windows choose More info -> Run anyway.
+
+   Or with Python 3 (nothing to install):
 
    ```
    python3 apply.py path/to/BLACKBOX.bin
@@ -109,7 +115,7 @@ Presets saved before Synb0x (stock 3.1.9, blackbox-mod 3.1.n) load, but the Filt
 filtered pads sound different. The **Synb0x Preset Converter** rewrites them to sound as they did:
 
 - **App** (Windows and macOS): download `Synb0x-Preset-Converter-Windows.zip` or `-macOS.zip` from the release (or the
-  latest run under Actions -> Preset Converter apps), unzip and open it. Add the SD card (or a Presets folder, a preset
+  latest run under Actions -> Synb0x apps), unzip and open it. Add the SD card (or a Presets folder, a preset
   folder, a single `preset.xml`); it lists every preset and what will change. Then **Replace in place** (each
   original kept beside it as `preset.xml.bak`) or **Make copies** (`<name> syn`), and Convert. The apps aren't signed:
   on macOS right-click the app and choose Open the first time; on Windows choose More info -> Run anyway.
@@ -201,7 +207,7 @@ any build is the real test.
 ## What is and isn't in this repository
 
 In it: original source code, patch definitions (addresses and replacement bytes), tools (`apply.py`,
-`convert_presets.py`, `preset_converter_gui.py`), and MIT-licensed third-party
+`convert_presets.py`, and the two apps: `synb0x_patcher_gui.py`, `preset_converter_gui.py`), and MIT-licensed third-party
 DSP with its notices ([THIRD_PARTY.md](THIRD_PARTY.md)).
 
 Not in it, and please don't add it in issues or pull requests: 1010music's firmware, patched firmware images,

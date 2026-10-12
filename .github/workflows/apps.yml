@@ -1,0 +1,107 @@
+# Builds the Synb0x apps for Windows and macOS:
+#   Synb0x Firmware Patcher  (synb0x_patcher_gui.py + apply.py, with every release's patch JSON: 3.1.t from main,
+#                             3.1.s from release/3.1.s; no firmware is included, the user brings the stock file)
+#   Synb0x Preset Converter  (preset_converter_gui.py + convert_presets.py)
+# Run it from the Actions tab (Run workflow), or it runs when one of them changes; the apps are the run's artifacts.
+# With a release tag given, they are also attached to that release.
+name: Synb0x apps
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach the apps to this release (e.g. 3.1.t); leave empty to only build"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - apply.py
+      - synb0x_patcher_gui.py
+      - convert_presets.py
+      - preset_converter_gui.py
+      - test_convert_presets.py
+      - docs/*.json
+      - .github/workflows/apps.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: Windows
+          - os: macos-latest
+            platform: macOS
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyQt6 and PyInstaller
+        run: python -m pip install PyQt6==6.11.0 pyinstaller==6.22.3
+
+      - name: Collect the release patches (main + release/3.1.s)
+        run: |
+          mkdir -p bundle/patches
+          cp docs/blackbox-mod-*.json bundle/patches/
+          git show origin/release/3.1.s:docs/blackbox-mod-3.1.s.json > bundle/patches/blackbox-mod-3.1.s.json
+          ls bundle/patches
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          python test_convert_presets.py
+          python -c "
+          from PyQt6.QtWidgets import QApplication
+          import preset_converter_gui, synb0x_patcher_gui as p
+          p.patch_dirs = lambda: ['bundle/patches']
+          a = QApplication([])
+          preset_converter_gui.Window().show()
+          w = p.Window(); w.show()
+          assert list(w.patches) == ['3.1.t', '3.1.s'], list(w.patches)
+          print('windows open; patches', list(w.patches))
+          "
+
+      - name: Build
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then SEP=";"; MODE="--onefile"; else SEP=":"; MODE=""; fi
+          pyinstaller --noconfirm --windowed $MODE --name "Synb0x Firmware Patcher" \
+            --osx-bundle-identifier com.rfidmusic.synb0x.patcher --exclude-module tkinter \
+            --add-data "bundle/patches${SEP}patches" synb0x_patcher_gui.py
+          pyinstaller --noconfirm --windowed $MODE --name "Synb0x Preset Converter" \
+            --osx-bundle-identifier com.rfidmusic.synb0x.presetconverter --exclude-module tkinter preset_converter_gui.py
+          mkdir -p out
+          for app in "Synb0x Firmware Patcher" "Synb0x Preset Converter"; do
+            zip="out/$(echo "$app" | tr ' ' '-')-${{ matrix.platform }}.zip"
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              pwsh -Command "Compress-Archive -Path 'dist/$app.exe' -DestinationPath '$zip'"
+            else
+              ditto -c -k --keepParent "dist/$app.app" "$zip"
+            fi
+          done
+          ls -l out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Synb0x-apps-${{ matrix.platform }}
+          path: out/*.zip
+
+      - name: Attach to the release
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ inputs.release_tag }}" out/*.zip --clobber
