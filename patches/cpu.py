@@ -13,6 +13,8 @@ def hook(at, stock, name):
 PATCHES = [
     # audio task: the queue wait between 256-frame blocks
     hook(0x080414E4, 0x08088756, "cpu_wait"),
+    # screen task (defaultTask): end of each frame, where a new reading goes onto the labels
+    hook(0x08043E4C, 0x0808B2D0, "cpu_gui"),
     # global cell info (address 0x40): its name is the version text the screens show. The 10 bytes that copied
     # 6 bytes of "3.1.x" become: mov r0, r2; bl cpu_name; nop; nop
     (0x0809AD84, bytes.fromhex("6a4b18681060 9b889380".replace(" ", "")),

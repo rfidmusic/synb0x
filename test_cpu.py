@@ -1,7 +1,8 @@
 """CPU meter under Unicorn.
 
 Real firmware runs for: the text-object setter (string copy + dirty flag) on fake label text objects.
-Stubbed: the FreeRTOS queue wait (advances a fake DWT cycle counter), the label setter.
+Stubbed: the FreeRTOS queue wait (advances a fake DWT cycle counter), the label setter (copies the text), the screen
+task's frame (FUN_0808b2d0). Labels are read as the screen shows them: after the screen task's next frame (cpu_gui).
 NOT checked: that the DWT counter runs on the unit, the label redraw, and which screen shows which label (hardware).
 """
 import struct
@@ -32,7 +33,14 @@ def receive():
 
 
 e.stubs[0x08088756] = receive
-e.stub(0x080A3DEC)
+
+def label_set():
+    e.calls.append(("label", e.arg(0)))
+    e.uc.mem_write(e.arg(0) + 0x34 + 0x31, e.cstr(e.arg(1)).encode() + b"\0")
+
+
+e.stub(0x080A3DEC, label_set)
+e.stub(0x0808B2D0, lambda: e.calls.append(("frame", e.arg(0))))
 
 
 def block(busy, idle):
@@ -42,7 +50,16 @@ def block(busy, idle):
     return e.call("cpu_wait", 0x24001F00, 0x24001F80, 2000, 0)
 
 
+def frame():
+    return e.call("cpu_gui", 0x24020088)
+
+
 def text(i):
+    frame()
+    return e.cstr(TEXT[i] + 0x31)
+
+
+def raw(i):
     return e.cstr(TEXT[i] + 0x31)
 
 
@@ -80,6 +97,15 @@ check("before a full second: labels untouched", text(0) == V)
 block(PERIOD * 30 // 100, PERIOD * 70 // 100)
 check(f"after 188 blocks at 30% busy: '{SV} 30/30%' on every label", [text(i) for i in range(3)] == [SV + " 30/30%"] * 3, [text(i) for i in range(3)])
 check("the label's own dirty flag is set by the stock setter", e.r8(TEXT[1] + 0x55) == 1 or e.r8(TEXT[1] + 0x56) == 1)
+c = frame()
+check("the screen frame is passed through, and an already shown reading is not written again",
+      c == [("frame", 0x24020088)], c)
+for i in range(188):
+    block(PERIOD * 20 // 100, PERIOD * 80 // 100)
+check("the audio task itself never writes a label (the screen task does)", raw(1) == SV + " 30/30%", raw(1))
+c = frame()
+check("the next screen frame puts the new reading up; label A through its own setter (redraw)",
+      ("label", TEXT[0] - 0x34) in c and raw(0) == raw(1) == SV + " 20/20%", (c, raw(0), raw(1)))
 
 for i in range(188):
     busy = 80 if i == 50 else 40
