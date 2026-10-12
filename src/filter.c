@@ -408,7 +408,7 @@ static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
                     cc->idx[k] = ABSENT;
                 for (unsigned i = 0; i < count; i++) {
                     unsigned eid = ENTRY_ID(e, i);
-                    if (eid != 0xf1 && eid != 0xdb && eid - P_FTYPE > P_FDEPTH - P_FTYPE)
+                    if (eid != 0xf1 && eid != 0xdb && eid - P_FTYPE > P_FRELEASE - P_FTYPE)
                         continue;                       /* not one of ours: most of the record */
                     for (unsigned k = 0; k < 8; k++)
                         if (eid == cfg_ids[k]) {

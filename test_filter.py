@@ -18,7 +18,8 @@ e = Emu("out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+
 OBJ, PARAMS, PAD, BUF, LBUF, RBUF, AMP = 0x24060000, 0x24061000, 0x24062000, 0x24063000, 0x24064000, 0x24066000, 0x24068000
 N = 64
 FS = 48000.0
-P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH = range(0x1E1, 0x1E7)
+P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, _UNUSED, P_FDEPTH = range(0x1E1, 0x1E7)
+P_FRELEASE = 0x1EB                                  # 0x1e5 is a hidden stock Keys switch
 LP, HP, BP = 0, 1, 2
 values = {}
 

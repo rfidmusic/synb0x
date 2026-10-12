@@ -17,7 +17,8 @@ IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+ca
 e = Emu(IMG, "out/cave.elf")
 stock = Emu("firmware/BLACKBOX-3.1.9.bin", "out/cave.elf")
 P_FILTER, P_RES = 200, 0x11
-P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH = range(0x1E1, 0x1E7)
+P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, _UNUSED, P_FDEPTH = range(0x1E1, 0x1E7)
+P_FRELEASE = 0x1EB                                  # 0x1e5 is a hidden stock Keys switch
 fails = 0
 
 

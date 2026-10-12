@@ -8,7 +8,9 @@
 #define P_FATTACK  0x1e2         /* 0..1000, 60 x^3 s */
 #define P_FDECAY   0x1e3
 #define P_FSUSTAIN 0x1e4         /* 0..1000 level */
-#define P_FRELEASE 0x1e5
+#define P_FRELEASE 0x1eb         /* not 0x1e5: stock intercepts that id as a hidden Keys-screen switch (FUN_0809fa50 /
+                                    FUN_08099504 set / get app + 0x8cc7 instead of the pad record), so the value never
+                                    stored and turning the knob flipped that switch */
 #define P_FDEPTH   0x1e6         /* -1000..1000: cutoff travel, 1000 = the knob's whole range */
 #define P_GLIDE    0x1e7         /* Glide: Off / Always / Legato (glide.c) */
 #define P_GLIDETIME 0x1e8        /* Glide Time: 0..1000, 10 x^3 s */

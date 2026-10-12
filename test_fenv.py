@@ -19,7 +19,8 @@ from emu import Emu
 IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 P_FILTER = 200
-P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH = range(0x1E1, 0x1E7)
+P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, _UNUSED, P_FDEPTH = range(0x1E1, 0x1E7)
+P_FRELEASE = 0x1EB                                  # 0x1e5 is a hidden stock Keys switch
 
 fails = 0
 
@@ -157,6 +158,27 @@ check("clip / slicer: both voices' Filter slot 2 = their own FENV object, amount
       v0 == (PADB + 0x3AC + 0x44, f32(-0.4)) and v1 == (PADB + 0x7BC + 0x44, f32(-0.4)), (v0, v1))
 route("fenv_mod_msg_b", PADB, 0x11, 0, 0xE, 1000)              # KEY -> Res: stock
 check("clip / slicer: KEY -> Res still routed by stock (pad + 0x2b0)", slots(PADB + 0x484)[0][0] == PADB + 0x2B0)
+
+# --- the stock parameter getter reads every new parameter from the pad record (none is intercepted as a hidden switch)
+APPB, REFB, OUT = 0x24010000, 0x24046000, 0x24046100
+store = APPB + 0x1840 + 1 * 0xF0 + 2 * 0x30
+ARRB = 0x24052000
+ours = [P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH, 0x1E7, 0x1E8]
+e.uc.mem_write(ARRB, b"".join(struct.pack("<HHi", pid, 0, 100 + k) for k, pid in enumerate(ours)))
+e.w32(store + 4, ARRB)
+e.uc.mem_write(store + 10, struct.pack("<H", len(ours)))
+e.uc.mem_write(REFB, struct.pack("<IH", 0, 1 << 4 | 2))
+got = {}
+for pid in ours:
+    e.w32(OUT, 0xDEAD)
+    e.call(0x08099504, APPB, REFB, pid, OUT)
+    got[hex(pid)] = e.r32(OUT)
+check("stock getter (FUN_08099504) returns each new parameter's stored value",
+      got == {hex(pid): 100 + k for k, pid in enumerate(ours)}, got)
+e.uc.mem_write(APPB + 0x8CC7, b"\x01")
+e.call(0x08099504, APPB, REFB, 0x1E5, OUT)
+check("(0x1e5, Filter Release's old id, is the hidden Keys switch: the getter returns app+0x8cc7, not the record)",
+      e.r32(OUT) == 1 and P_FRELEASE != 0x1E5)
 
 print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)
