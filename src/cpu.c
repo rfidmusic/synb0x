@@ -7,8 +7,10 @@
  * that show the version ("3.1.t") get " avg/peak%" appended, the average and the worst 5.33 ms block of the last second, and so
  * does the global cell's name (FUN_0809ad74, address 0x40), which is where the version actually shows on screen.
  * If the cycle counter never moves, the text reads " --%" instead, so a dead counter is visible, not silent.
- * The labels are filled in when their screens are built; the meter rewrites their text from the audio task (a plain
- * character copy plus the label's own dirty flag), and only when the label still starts with "3.1.", so a stale
+ * The labels are filled in when their screens are built (once, at boot). The audio task only measures; the screen
+ * task (defaultTask, FUN_08043dec) rewrites the labels after each frame (cpu_gui, wrapping FUN_0808b2d0 @0x08043e4c)
+ * when a new reading is in, through the same setters the constructors use: writing them from the audio task (3.1.s,
+ * 3.1.t) never showed on the device. Only labels whose text still starts with the version are written, so a stale
  * pointer from an earlier boot is never written through.
  */
 #include <stdint.h>
@@ -22,6 +24,7 @@ typedef void (*label_fn)(uint8_t *label, const char *s);
 #define fw_receive  ((receive_fn)FN(0x08088756))     /* FreeRTOS queue receive */
 #define fw_text_set ((text_fn)FN(0x080c3b98))        /* text object: copy string (<= 31 chars), mark dirty */
 #define fw_label_set ((label_fn)FN(0x080a3dec))      /* label: text object at +0x34, then redraw */
+#define fw_gui_frame ((void (*)(void *))FN(0x0808b2d0))   /* screen task: end of one frame */
 
 /* The firmware version the screens show. patches/cave.py points the four stock references to the stock "3.1.9" (literal
    pool words @0x0809af30, 0x080aeaf4, 0x080c55e8, 0x080c72c8) here, so the name is not limited by the stock slot. */
@@ -54,6 +57,26 @@ struct cpu_state {
 #define STATUS_NONE    0         /* nothing measured yet */
 #define STATUS_OK      1
 #define STATUS_NO_CLOCK 2        /* a second of wake-ups and the cycle counter never moved */
+
+/* Hand-over to the screen task, in free patch RAM (the old chord state, 0x2405ffa4..0x2405ffcf). */
+struct ui_state {
+    uint32_t magic;
+    uint16_t reports;            /* readings made (audio task) */
+    uint16_t shown;              /* readings put on the labels (screen task) */
+    uint32_t ticks;              /* screen frames */
+    uint32_t wakes;              /* audio wake-ups since boot */
+};
+#define U ((volatile struct ui_state *)0x2405ffa4u)
+#define UMAGIC 0x55494d31u       /* "UIM1" */
+
+static void ui_init(void)
+{
+    if (U->magic != UMAGIC) {
+        U->reports = U->shown = 0;
+        U->ticks = U->wakes = 0;
+        U->magic = UMAGIC;
+    }
+}
 
 static void start(void)
 {
@@ -118,23 +141,84 @@ static void compose(char *buf)
 
 static void report(void)
 {
-    char buf[32];
-    compose(buf);
+    ui_init();
+    U->reports++;
+}
+
+/* The version labels' text objects, or 0 for a pointer that is not (or no longer) one of ours. */
+static uint8_t *ours(int i)
+{
+    uint8_t *t = M->text[i];
+    /* the screens are one large object the stock boot code takes from the SDRAM pool (FUN_080443a8, 593 KB), so
+       their labels live in SDRAM; AXI RAM is accepted too. Anything else is not a label of ours. */
+    uint32_t a = (uint32_t)t;
+    if (!((a >= 0x24000000u && a < 0x24080000u) || (a >= 0xc0000000u && a < 0xc4000000u)))
+        return 0;
+    const char *c = (const char *)(t + TEXT_CHARS), *sv = short_version();
+    if (c[0] == '3' && c[1] == '.' && c[2] == '1' && c[3] == '.')        /* full version */
+        return t;
+    for (int k = 0; sv[k] == c[k]; k++)                                   /* or the short one */
+        if (sv[k + 1] == 0)
+            return t;
+    return 0;
+}
+
+static void show(const char *buf)
+{
     for (int i = 0; i < LABELS; i++) {
-        uint8_t *t = M->text[i];
-        /* the screens are one large object the stock boot code takes from the SDRAM pool (FUN_080443a8, 593 KB), so
-           their labels live in SDRAM; AXI RAM is accepted too. Anything else is not a label of ours. */
-        uint32_t a = (uint32_t)t;
-        if (!((a >= 0x24000000u && a < 0x24080000u) || (a >= 0xc0000000u && a < 0xc4000000u)))
+        uint8_t *t = ours(i);
+        if (!t)
             continue;
-        const char *c = (const char *)(t + TEXT_CHARS), *sv = short_version();
-        int ours = c[0] == '3' && c[1] == '.' && c[2] == '1' && c[3] == '.';     /* full version */
-        for (int k = 0; !ours && sv[k] == c[k]; k++)                              /* or the short one */
-            if (sv[k + 1] == 0)
-                ours = 1;
-        if (ours)
+        if (i == 0)
+            fw_label_set(t - LABEL_TEXT, buf);     /* a label: its own setter redraws it */
+        else
             fw_text_set(t, buf);
     }
+}
+
+#ifdef CPU_DIAG
+static char *put_dec(char *p, unsigned v)
+{
+    char tmp[10];
+    int n = 0;
+    do {
+        tmp[n++] = (char)('0' + v % 10);
+        v /= 10;
+    } while (v);
+    while (n)
+        *p++ = tmp[--n];
+    return p;
+}
+#endif
+
+/* Replaces the screen task's end-of-frame call (bl FUN_0808b2d0 @0x08043e4c): the frame first, then a new reading
+   onto the labels. */
+void cpu_gui(void *app)
+{
+    fw_gui_frame(app);
+    if (M->magic != MAGIC)
+        return;
+    ui_init();
+    U->ticks++;
+    char buf[32];
+#ifdef CPU_DIAG
+    /* DIAGNOSTIC: until a reading shows, "td n<audio wake-ups> s<status> f<screen frames>" twice a second or so */
+    if (M->status != STATUS_OK && (U->ticks & 31) == 0) {
+        char *p = buf;
+        *p++ = 't'; *p++ = 'd';
+        *p++ = ' '; *p++ = 'n'; p = put_dec(p, U->wakes % 100000u);
+        *p++ = ' '; *p++ = 's'; p = put_dec(p, M->status);
+        *p++ = ' '; *p++ = 'f'; p = put_dec(p, U->ticks % 100000u);
+        *p = 0;
+        show(buf);
+        return;
+    }
+#endif
+    if (U->shown == U->reports)
+        return;
+    U->shown = U->reports;
+    compose(buf);
+    show(buf);
 }
 
 /* Replaces the audio task's queue wait (bl @0x080414e4). */
@@ -142,6 +226,10 @@ int cpu_wait(void *queue, void *item, uint32_t ticks, int peek)
 {
     if (M->magic != MAGIC)
         start();
+#ifdef CPU_DIAG
+    ui_init();
+    U->wakes++;
+#endif
     uint32_t idle_from = DWT_CYCCNT, busy = idle_from - M->woke;
     int got = fw_receive(queue, item, ticks, peek);
     uint32_t now = DWT_CYCCNT, period = now - M->woke;
