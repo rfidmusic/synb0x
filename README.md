@@ -15,7 +15,7 @@ sources. Firmware version: **3.1.s** (released earlier the same day as 3.1.9-syn
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `417aebb41fbd416c0216264a447a2d9a7c1d221a7128668848556e164653e807` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `9722033fbc623676c4df243711e66d217045fc3faff3430e4e9bdc9cb80cad1b` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -96,6 +96,12 @@ patch file itself (`docs/blackbox-mod-3.1.s.json`, `output_sha256`).
 **Presets:** they load. Synb0x's new settings save with the pad; presets made before it get the defaults (Type LP,
 envelope Depth 0, Glide Off). One change to know about: a pad saved with the Filter knob at centre (stock: filter off)
 now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock firmware ignores the extra settings.
+
+### Fixed in the 3.1.s update
+
+- The Filt tab's **Release** knob did not keep its value (it snapped back to 30 at the next note) and flipped a hidden
+  Keys-screen switch when turned: it was on a parameter id that stock firmware reserves. Moved to a free id.
+- The **CPU meter** never showed its numbers: it skipped the version labels because they live in SDRAM.
 
 ### Known issues
 
