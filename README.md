@@ -26,7 +26,7 @@ certutil -hashfile BLACKBOX.bin SHA256   # Windows
 
 The same value is in [`SHA256SUMS`](SHA256SUMS) (`shasum -a 256 -c SHA256SUMS` next to your patched file) and in the
 patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier releases (3.1.s:
-`a578ef3100749174e8f60250005638b929abdfc416378b00a9b6f455f63a4f9d`) are on their tags and release pages.
+`0305408ed409889d5eb8f736131c6c4e2f607d99aaf79336140656eed1218bb3`) are on their tags and release pages.
 
 ## Install
 
