@@ -80,13 +80,26 @@ static char *put_uint(char *p, unsigned v)
     return p;
 }
 
-/* "3.1.9-syn 34/71%", "3.1.9-syn --%", or just the version before the first second. Writes at most 25 bytes
+/* "syn 34/71%", "syn --%" (the version after its '-', plus the load), or the full version before the first
+   second. Writes at most 25 bytes
    (16 of version, " 100/100%", NUL); every destination has room: report()'s buffer 32, text objects 31 characters,
    the global cell's name 64. */
+/* With numbers the version is shortened to what follows its '-' ("syn"), so "syn 34/71%" stays within the 12 characters
+   of the original mod's "3.1.n 34/71%" and fits where the screens show the version; until then the full version shows. */
+static const char *short_version(void)
+{
+    const char *v = VERSION;
+    for (const char *c = VERSION; *c; c++)
+        if (*c == '-')
+            v = c + 1;
+    return v;
+}
+
 static void compose(char *buf)
 {
     char *p = buf;
-    for (const char *v = VERSION; *v && p < buf + 16; v++)
+    int numbers = M->magic == MAGIC && (M->status == STATUS_OK || M->status == STATUS_NO_CLOCK);
+    for (const char *v = numbers ? short_version() : VERSION; *v && p < buf + 16; v++)
         *p++ = *v;
     if (M->magic == MAGIC && M->status == STATUS_OK) {
         *p++ = ' ';
@@ -111,8 +124,12 @@ static void report(void)
         uint8_t *t = M->text[i];
         if ((uint32_t)t < 0x24000000u || (uint32_t)t >= 0x24080000u)
             continue;
-        const char *c = (const char *)(t + TEXT_CHARS);
-        if (c[0] == '3' && c[1] == '.' && c[2] == '1' && c[3] == '.')
+        const char *c = (const char *)(t + TEXT_CHARS), *sv = short_version();
+        int ours = c[0] == '3' && c[1] == '.' && c[2] == '1' && c[3] == '.';     /* full version */
+        for (int k = 0; !ours && sv[k] == c[k]; k++)                              /* or the short one */
+            if (sv[k + 1] == 0)
+                ours = 1;
+        if (ours)
             fw_text_set(t, buf);
     }
 }

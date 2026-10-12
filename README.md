@@ -15,7 +15,7 @@ sources. Firmware version: **3.1.9-syn**.
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.9-syn** (what `apply.py` writes) | `de613438eafd9c866e06331c770c139ca208c66d621c1b0f57ad6c0350051c79` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.9-syn** (what `apply.py` writes) | `6c7d461fe3042d18a412e3013747c2642ef824db896768daa8fee60b196d5d45` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -75,7 +75,8 @@ patch file itself (`docs/blackbox-mod-3.1.9-syn.json`, `output_sha256`).
 - **Master compressor models**: Stock, Glue, Punch, Opto, Squash, Limit, plus a Comp Thresh setting.
 - **Reverb Type**: Plate (stock) or Room.
 - **Delay Type**: Delay (stock) or Munchi (a port of the CHOMPI TEMPO granular delay), with its own Duck control.
-- **CPU meter** next to the version: average / worst block of the last second.
+- **CPU meter** next to the version: average / worst block of the last second, shown as `syn avg/peak%` so it fits on
+  screen.
 
 ## Differences from blackbox-mod 3.1.n
 
