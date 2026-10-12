@@ -15,7 +15,7 @@ LP / notch / HP morph, glide and two modulation sources. Firmware version: **3.1
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `42bc7be548678e9599c6c8db261bc9e72c9935e18042bbf20c52396cd6af3166` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `226b86a1fc32f85f4d606cdd7720c9919f249c0b732659ce6d4ab87aa7a7864b` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -26,7 +26,7 @@ certutil -hashfile BLACKBOX.bin SHA256   # Windows
 
 The same value is in [`SHA256SUMS`](SHA256SUMS) (`shasum -a 256 -c SHA256SUMS` next to your patched file) and in the
 patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier releases (3.1.s:
-`0305408ed409889d5eb8f736131c6c4e2f607d99aaf79336140656eed1218bb3`) are on their tags and release pages.
+`2fbff5563ef236dfb2b84b04ba462f4da38a6bb9e2a2f50329cd6fdf7cc4c4de`) are on their tags and release pages.
 
 ## Install
 
@@ -78,8 +78,7 @@ patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier rel
 - **Master compressor models**: Stock, Glue, Punch, Opto, Squash, Limit, plus a Comp Thresh setting.
 - **Reverb Type**: Plate (stock) or Room.
 - **Delay Type**: Delay (stock) or Munchi (a port of the CHOMPI TEMPO granular delay), with its own Duck control.
-- **CPU meter** next to the version: average / worst block of the last second, as `3.1.t avg/peak%` (not showing yet:
-  see Known issues).
+- **CPU meter** next to the version: average / worst block of the last second, as `3.1.t avg/peak%`.
 
 ## Differences from blackbox-mod 3.1.n
 
@@ -105,6 +104,8 @@ now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock fir
 
 ### Fixed in the 3.1.t update
 
+- The **CPU meter** now shows on the device: the readings are put on the version labels by the screen task instead of
+  the audio task, whose label writes the screen never redrew.
 - **Morph** did little between its ends: it mixed LP and HP at full level, so the middle half sounded nearly
   unfiltered apart from a narrow notch. It is now a plain crossfade (SEM style) that changes the sound across the whole
   knob, about 12 dB quieter at the notch (50 %).
@@ -120,20 +121,18 @@ now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock fir
 
 - The Filt tab's **Release** knob did not keep its value (it snapped back to 30 at the next note) and flipped a hidden
   Keys-screen switch when turned: it was on a parameter id that stock firmware reserves. Moved to a free id.
-- The **CPU meter** skipped the version labels because they live in SDRAM (the numbers still do not show: see
-  Known issues).
+- The **CPU meter** skipped the version labels because they live in SDRAM.
 
 ### Known issues
 
 - Solo can stick: after un-soloing, pads may stay muted. Unmute them in Mute mode.
 - Presets saved with a Fidelity value on an older mod build may read a different value.
-- The **CPU meter** numbers do not show on the device yet (the version shows alone); under investigation.
 
 ## CPU use
 
 Measured under the Unicorn emulator on the same audio for stock 3.1.9 and this build: executed instructions per
 256-frame block (5.33 ms), the code the mod replaces or wraps on the audio path. Instructions are not cycles, so these
-compare builds rather than predict the load on the device (the on-screen CPU meter does not work yet).
+compare builds rather than predict the load on the device (the on-screen CPU meter shows the real load).
 
 | Per voice, unless noted | Stock 3.1.9 | Synb0x 3.1.t |
 |---|---|---|
