@@ -101,18 +101,26 @@ firmware ignores the extra settings.
 ### Converting older presets
 
 Presets saved before Synb0x (stock 3.1.9, blackbox-mod 3.1.n) load, but the Filter knob means something else now, so
-filtered pads sound different. `convert_presets.py` (Python 3, nothing to install) rewrites them to sound as they did:
+filtered pads sound different. The **Synb0x Preset Converter** rewrites them to sound as they did:
 
-1. Copy the card's `Presets` folder (or single preset folders) to your computer.
-2. Run `python3 convert_presets.py path/to/Presets`. Each older preset is copied to a new folder, `<name> syn`, with
-   the converted `preset.xml`; the original is never changed. Presets already saved on Synb0x are skipped.
-3. Copy the `... syn` folders back to the card's `Presets` folder.
+- **App** (Windows and macOS): download `Synb0x-Preset-Converter-Windows.zip` or `-macOS.zip` from the 3.1.t release (or
+  the latest run under Actions -> Preset Converter apps), unzip and open it. Add the SD card (or a Presets folder, a preset
+  folder, a single `preset.xml`); it lists every preset and what will change. Then **Replace in place** (each
+  original kept beside it as `preset.xml.bak`) or **Make copies** (`<name> syn`), and Convert. The apps aren't signed:
+  on macOS right-click the app and choose Open the first time; on Windows choose More info -> Run anyway.
+- **Command line** (Python 3, nothing to install): `python3 convert_presets.py --in-place /Volumes/BLACKBOX` rewrites
+  every older `preset.xml` on the card (originals kept as `preset.xml.bak`); without `--in-place` it writes
+  `<name> syn` copies instead. The path can be the card, a Presets folder, a preset folder or a `preset.xml`.
+  The app itself runs from source too: `pip install PyQt6`, then `python3 preset_converter_gui.py`.
 
-Per pad: a stock low-pass at -50 becomes Filter 50 %, a high-pass at +60 becomes Filter 60 % with Type HP (Morph
-100 % on 3.1.t), both at the same cutoff; Filter at centre (off) becomes fully open (still off); modulation routes to Filter
-are doubled so they sweep as far. Works for 3.1.s and 3.1.t. It prints a note for what it can't match: a route that
-would need more than 100 %, and a centred Filter with modulation on it (stock opened a low-pass one way and a high-pass
-the other). The slope stays Synb0x's 24 dB/oct (stock 12 dB/oct).
+Presets already saved on Synb0x, or converted before, are skipped, so running it again is safe. To undo a conversion
+in place, delete `preset.xml` and rename `preset.xml.bak` back.
+
+Per pad: a stock low-pass at -50 becomes Filter 50 %, a high-pass at +60 becomes Filter 60 % with Type HP (Morph 100 %
+on 3.1.t), both at the same cutoff; Filter at centre (off) becomes fully open (still off); modulation routes to Filter
+are doubled so they sweep as far. Works for 3.1.s and 3.1.t. It notes what it can't match: a route that would need
+more than 100 %, and a centred Filter with modulation on it (stock opened a low-pass one way and a high-pass the
+other). The slope stays Synb0x's 24 dB/oct (stock 12 dB/oct).
 
 ### Fixed in the 3.1.s update
 
@@ -177,7 +185,7 @@ any build is the real test.
 ## What is and isn't in this repository
 
 In it: original source code, patch definitions (addresses and replacement bytes), tools (`apply.py`,
-`convert_presets.py`), and MIT-licensed third-party
+`convert_presets.py`, `preset_converter_gui.py`), and MIT-licensed third-party
 DSP with its notices ([THIRD_PARTY.md](THIRD_PARTY.md)).
 
 Not in it, and please don't add it in issues or pull requests: 1010music's firmware, patched firmware images,
