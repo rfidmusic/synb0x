@@ -537,6 +537,60 @@ for v in (0, 1):
         err = max(err, max(abs(p - q) for p, q in zip(l, mod.block(sig[b_ * N:(b_ + 1) * N]))))
     check(f"clip / slicer voice {v + 1}: KEY -> Morph read from its own block", err < 1e-4, err)
 
+# --- no clicks: a clean 110 Hz tone through moving controls; the 3rd difference shows any step the tone cannot have
+def click_run(blocks, control, amp_at=lambda b: 3):
+    OBJA = OBJ - 0x7C
+    note_on()
+    out = []
+    for b_ in range(blocks):
+        control(b_)
+        e.uc.mem_write(OBJA, bytes([amp_at(b_)]))
+        x = [0.4 * math.sin(2 * math.pi * 110 * (b_ * 256 + i) / FS) for i in range(256)]
+        e.uc.mem_write(LBUF, struct.pack("<256f", *x))
+        e.uc.mem_write(BUF, struct.pack("<IIIIBB", 256, 256, LBUF, 0, 0, 0))
+        e.call("filter_process", OBJ, BUF, PAD, OBJA)
+        out += struct.unpack("<256f", e.uc.mem_read(LBUF, 1024))
+    d = [out[i] - 3 * out[i - 1] + 3 * out[i - 2] - out[i - 3] for i in range(4 * 256, len(out))]
+    return max(abs(v) for v in d)
+
+
+def ctl_open(b_):
+    values[PARAMS + 8], values[PARAMS + 0x44] = (1.0 if (b_ // 8) % 2 else 0.3), 0.5
+
+
+setup(0.3, 0.5)
+worst = click_run(64, ctl_open)
+check(f"no click turning Filter to fully open (filter stops) and back (worst step {worst:.4f})", worst < 0.003, worst)
+
+
+def ctl_morph(b_):
+    values[PARAMS + 8], values[PARAMS + 0x44] = 0.0, 0.5
+    set_pad(ftype=int(500 + 500 * math.sin(b_ / 5)))
+
+
+setup(0.0, 0.5)
+worst = click_run(60, ctl_morph)
+check(f"no click sweeping Morph LP -> notch -> HP (worst step {worst:.4f})", worst < 0.003, worst)
+
+
+def ctl_edges(b_):
+    values[PARAMS + 8], values[PARAMS + 0x44] = 0.0, 0.5
+    set_pad(ftype=[0, 30, 0, 970, 1000, 970][b_ % 6])
+
+
+worst = click_run(60, ctl_edges)
+check(f"no click stepping Morph across its LP and HP ends (worst step {worst:.4f})", worst < 0.003, worst)
+
+
+def ctl_lfo(b_):
+    values[PARAMS + 8], values[PARAMS + 0x44] = 0.0, 0.5
+    e.uc.mem_write(OBJ - 0xA8 + 0x524, struct.pack("<f", math.sin(2 * math.pi * 4.0 * b_ * 256 / FS)))
+
+
+setup(0.0, 0.5, ftype=NOTCH, routes=[(4, P_FMORPH, 0, 1000)])
+worst = click_run(60, ctl_lfo)
+check(f"no click with a 4 Hz LFO on Morph at full depth (worst step {worst:.4f})", worst < 0.003, worst)
+
 # --- a 3.1.9-syn preset: Type HP / BP becomes Morph 100 / 50 (the notch: Morph has no BP) in the record, once
 for old, want_morph, name in ((1, 1000, "HP"), (2, 500, "BP"), (0, 0, "LP")):
     reset()

@@ -213,8 +213,12 @@ enum { TYPE_LP, TYPE_HP, TYPE_MIX };
  * band-pass integrator soft-limited while driven. Same arithmetic as running the stages one after the other.
  * DRIVEN is a compile-time 0 / 1, so each variant is its own tight loop.
  */
-#define SVF2_LOOP(OUT, DRIVEN)                                                                                     \
+#define SVF2_LOOP(OUT, DRIVEN, RAMP)                                                                               \
     for (int i = 0; i < n; i++) {                                                                                  \
+        if (RAMP) {                                                                                                \
+            wl += dl;                                                                                              \
+            wh += dh;                                                                                              \
+        }                                                                                                          \
         float v = x[i];                                                                                            \
         if (DRIVEN)                                                                                                \
             v = soft(v * pre, 1.0f, 1.0f);                                                                         \
@@ -232,12 +236,15 @@ enum { TYPE_LP, TYPE_HP, TYPE_MIX };
         x[i] = OUT(hp, bp, lp, r);                                                                                 \
     }
 
-/* s = {stage 1 s1, stage 1 s2, stage 2 s1, stage 2 s2} for this channel. drive 0 = clean. w = {LP, HP} weights: pure LP
-   or pure HP takes that output's own loop (no blending cost), anything else crossfades. */
-static void svf2(float *x, int n, float g, float r, float *s[4], const float w[2], float drive)
+/* s = {stage 1 s1, stage 1 s2, stage 2 s1, stage 2 s2} for this channel. drive 0 = clean. w0 -> w1: the {LP, HP} weights
+   at the start and end of the call, ramped sample by sample when they differ (a step would click). Pure LP or pure HP
+   throughout takes that output's own loop (no blending cost). */
+static void svf2(float *x, int n, float g, float r, float *s[4], const float w0[2], const float w1[2], float drive)
 {
-    float wl = w[0], wh = w[1];
-    int type = wh == 0.0f ? TYPE_LP : wl == 0.0f ? TYPE_HP : TYPE_MIX;
+    int ramp = w0[0] != w1[0] || w0[1] != w1[1];
+    float wl = w0[0], wh = w0[1];
+    float dl = ramp && n > 0 ? (w1[0] - w0[0]) / (float)n : 0.0f, dh = ramp && n > 0 ? (w1[1] - w0[1]) / (float)n : 0.0f;
+    int type = ramp ? TYPE_MIX : wh == 0.0f ? TYPE_LP : wl == 0.0f ? TYPE_HP : TYPE_MIX;
     float h1 = 1.0f / (1.0f + R_BUTTERWORTH * g + g * g), rg1 = R_BUTTERWORTH + g;
     float h2 = 1.0f / (1.0f + r * g + g * g), rg2 = r + g;
     float a1 = *s[0], a2 = *s[1], b1 = *s[2], b2 = *s[3];
@@ -245,22 +252,26 @@ static void svf2(float *x, int n, float g, float r, float *s[4], const float w[2
         float pre = 1.0f + 3.0f * drive;
         float limit = 4.0f - 3.0f * drive, inv = 1.0f / limit;  /* resonant stage ceiling, 4 down to 1 */
         if (type == TYPE_HP)
-            SVF2_LOOP(OUT_HP, 1)
+            SVF2_LOOP(OUT_HP, 1, 0)
+        else if (type == TYPE_MIX && ramp)
+            SVF2_LOOP(OUT_MIX, 1, 1)
         else if (type == TYPE_MIX)
-            SVF2_LOOP(OUT_MIX, 1)
+            SVF2_LOOP(OUT_MIX, 1, 0)
         else
-            SVF2_LOOP(OUT_LP, 1)
+            SVF2_LOOP(OUT_LP, 1, 0)
     } else {
         float pre = 1.0f, limit = 1.0f, inv = 1.0f;
         (void)pre;
         (void)limit;
         (void)inv;
         if (type == TYPE_HP)
-            SVF2_LOOP(OUT_HP, 0)
+            SVF2_LOOP(OUT_HP, 0, 0)
+        else if (type == TYPE_MIX && ramp)
+            SVF2_LOOP(OUT_MIX, 0, 1)
         else if (type == TYPE_MIX)
-            SVF2_LOOP(OUT_MIX, 0)
+            SVF2_LOOP(OUT_MIX, 0, 0)
         else
-            SVF2_LOOP(OUT_LP, 0)
+            SVF2_LOOP(OUT_LP, 0, 0)
     }
     *s[0] = a1;
     *s[1] = a2;
@@ -630,6 +641,12 @@ static void morph_weights(float m, float w[2])
 /* Smoothed Morph (knob and block-rate sources) per voice, in the filter object at +0x88 (written only by the stock
    voice start, which also clears st->on, and st->on == 0 re-seeds it) */
 #define MORPH_BASE(obj) (*(float *)((obj) + 0x88))
+/* The {LP, HP} weights the last step ended on, +0x8c / +0x90 (the stock voice start writes 0.5 / 0 there; re-seeded
+   whenever the filter starts) */
+#define WPREV(obj)      ((float *)((obj) + 0x8c))
+/* envstate pad[0]: the filter was skipped mid-note at its open end (1: LP side, 2: HP side); zeroed at voice start */
+#define BYPASSED(env)   ((env)->pad[0])
+#define XFADE 32                 /* frames of dry -> filtered when the filter starts again mid-note */
 
 /* Replaces the per-voice filter call. pad = the pad object the voice belongs to, amp = the voice's amp envelope stage
    byte (thunks in filter_thunk.S). */
@@ -688,10 +705,20 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
         else
             morph += cfg.amount[i] * source_value(cfg.source[i], obj, pad, amp);
     }
-    /* skipped only when it cannot change the sound: LP fully open or HP fully closed, nothing moving it */
+    /* skipped only when it cannot change the sound: LP fully open or HP fully closed, nothing moving it. While it runs,
+       it stops only once its own glides have reached that end (stopping as soon as the knob does jumps from filtered to
+       dry: a click). */
     int still = cfg.depth == 0.0f && cfg.routes == 0;
-    int active = !(still && ((cfg.morph <= 0.0001f && pos >= 0.999f) || (cfg.morph >= 0.9999f && pos <= 0.001f)));
+    int lp_open = cfg.morph <= 0.0001f && pos >= 0.999f, hp_open = cfg.morph >= 0.9999f && pos <= 0.001f;
+    if (st->on && st->magic == MAGIC) {
+        float mb = MORPH_BASE(obj), b = env->base;
+        lp_open = lp_open && mb <= 0.0001f && b >= 0.999f;
+        hp_open = hp_open && mb >= 0.9999f && b <= 0.001f;
+    }
+    int active = !(still && (lp_open || hp_open));
     if (!active) {
+        if (st->on)
+            BYPASSED(env) = lp_open ? 1 : 2;
         st->on = 0;
         if (!crunching)
             return;
@@ -731,11 +758,22 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     if (q > 40.0f)
         q = 40.0f;
     float r = 1.0f / q;
+    int xfade = 0;
     if (!st->on) {
         st->r = r;
         st->drive = drive;
-        env->base = pos;
-        MORPH_BASE(obj) = morph;
+        if (BYPASSED(env)) {
+            /* starting again mid-note: from the open end it stopped at, gliding to the knob, faded in from dry */
+            env->base = BYPASSED(env) == 1 ? 1.0f : 0.0f;
+            MORPH_BASE(obj) = BYPASSED(env) == 1 ? 0.0f : 1.0f;
+            xfade = 1;
+            BYPASSED(env) = 0;
+        } else {
+            env->base = pos;                                 /* a new note starts where the knobs are */
+            MORPH_BASE(obj) = morph;
+        }
+        float m0 = MORPH_BASE(obj) + morph_env * (subs ? levels[0] : 0.0f);
+        morph_weights(m0 < 0.0f ? 0.0f : m0 > 1.0f ? 1.0f : m0, WPREV(obj));
         for (int k = 0; k < 2; k++)
             st->s1[k][0] = st->s1[k][1] = st->s2[k][0] = st->s2[k][1] = 0.0f;
         st->on = 1;
@@ -750,8 +788,10 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
         env->base += glide * (pos - env->base);
         MORPH_BASE(obj) += glide * (morph - MORPH_BASE(obj));
         float m = MORPH_BASE(obj) + morph_env * levels[k];
-        float w[2];
+        float w[2], w0[2] = {WPREV(obj)[0], WPREV(obj)[1]};
         morph_weights(m < 0.0f ? 0.0f : m > 1.0f ? 1.0f : m, w);
+        WPREV(obj)[0] = w[0];
+        WPREV(obj)[1] = w[1];
         float p = env->base + cfg.depth * levels[k];
         p = p < 0.0f ? 0.0f : p > 1.0f ? 1.0f : p;
         float hz = fw_cutoff_hz(p);
@@ -765,7 +805,13 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
             if (!ch[c])
                 continue;
             float *sv[4] = {&st->s1[0][c], &st->s2[0][c], &st->s1[1][c], &st->s2[1][c]};
-            svf2(ch[c] + at, len, g, st->r, sv, w, st->drive);
+            float dry[XFADE];
+            int xl = xfade && k == 0 ? (len < XFADE ? len : XFADE) : 0;
+            for (int i = 0; i < xl; i++)
+                dry[i] = ch[c][at + i];
+            svf2(ch[c] + at, len, g, st->r, sv, w0, w, st->drive);
+            for (int i = 0; i < xl; i++)                    /* dry -> filtered over the first XFADE frames */
+                ch[c][at + i] = dry[i] + (ch[c][at + i] - dry[i]) * ((float)(i + 1) / (float)xl);
         }
     }
 }
