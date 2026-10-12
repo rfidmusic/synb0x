@@ -133,9 +133,9 @@ def sin_q(x):
 
 
 def weights(m):
-    """Morph 0..1 -> (LP, BP, HP) weights, as filter.c: LP full while HP comes in, then HP full while LP goes out"""
+    """Morph 0..1 -> (LP, BP, HP) weights, as filter.c: a plain crossfade, exact ends"""
     m = 0.0 if m <= 0.0001 else 1.0 if m >= 0.9999 else m
-    return (1.0 if m <= 0.5 else 2 * (1 - m), 0.0, 1.0 if m >= 0.5 else 2 * m)
+    return (1.0 - m, 0.0, m)
 
 
 def model_svf(x, g, r, s, ftype, limit):
@@ -296,11 +296,10 @@ check("LP at 1 kHz passes 100 Hz and cuts 12 kHz", lp_low > 0.9 and lp_high < 0.
 hp_low, hp_high = response(k, 0.5, 100, HP), response(k, 0.5, 12000, HP)
 check("HP at 1 kHz cuts 100 Hz and passes 12 kHz", hp_low < 0.1 and hp_high > 0.9, (hp_low, hp_high))
 n_mid, n_low, n_high = response(k, 0.5, 1000, NOTCH), response(k, 0.5, 100, NOTCH), response(k, 0.5, 10000, NOTCH)
-check(f"notch at 1 kHz: cuts 1 kHz (x{n_mid:.3f}), passes 100 Hz and 10 kHz", n_mid < 0.05 and n_low > 0.8 and n_high > 0.8,
+check(f"notch at 1 kHz: cuts 1 kHz (x{n_mid:.3f}), 100 Hz and 10 kHz at the crossfade's -12 dB", n_mid < 0.05 and 0.2 < n_low < 0.3 and 0.2 < n_high < 0.3,
       (n_mid, n_low, n_high))
 w = [weights(m / 1000) for m in range(0, 1001, 50)]
-check("Morph never fades both outputs: one of LP / HP is always at full level (no volume dip mid-sweep)",
-      all(max(a, c) == 1.0 for a, _, c in w), w)
+check("Morph weights are a plain crossfade (LP + HP = 1)", all(abs(a + c - 1) < 1e-6 for a, _, c in w), w)
 sweep = [response(k, 0.5, 300, m) for m in (0, 250, 500, 750, 1000)]
 check("Morph sweep at 300 Hz (below the cutoff): LP passes it, HP cuts it, in between it moves steadily",
       sweep[0] > 0.9 and sweep[-1] < 0.05 and all(b < a + 0.05 for a, b in zip(sweep, sweep[1:])), [round(v, 3) for v in sweep])

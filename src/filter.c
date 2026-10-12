@@ -14,8 +14,8 @@
  *      their ranges. Drive rides on Res: below the default (noon) the filter is clean; from noon to full the input is
  *      pushed into a soft clipper (up to +12 dB) and the resonant integrator is soft-limited, so high resonance
  *      growls and saturates instead of only getting louder.
- *   3. Morph (new pad param, fenv.c): LP at 0, notch at 50 %, HP at 100 %, mixing LP and HP in each stage at full
- *      level (morph_weights), and a modulation destination (any source, applied here). The Filter knob is cutoff across its whole travel, far left
+ *   3. Morph (new pad param, fenv.c): LP at 0, notch at 50 %, HP at 100 %, a plain LP / HP crossfade in each stage (as
+ *      the SEM's pot) (morph_weights), and a modulation destination (any source, applied here). The Filter knob is cutoff across its whole travel, far left
  *      20 Hz to far right 20.5 kHz (the stock curve's 0..1 half), instead of centre = off, left LP, right HP.
  *      LP fully open or HP fully closed, with nothing moving the filter, skips it, as centre did before.
  *   4. Filter envelope (new pad params, fenv.c): per voice ADSR, times 0 .. 60 s (60 x^3 s on the 0..100 knob, like the
@@ -625,17 +625,17 @@ static float source_value(unsigned src, const uint8_t *obj, const uint8_t *pad, 
     return x == x && x > -4.0f && x < 4.0f ? x : 0.0f;
 }
 
-/* Morph 0..1 -> {LP, HP} weights: LP stays full while HP comes in (0 -> 50 %), then HP stays full while LP goes out.
-   Halfway it is LP + HP, the notch at full level; a plain 50 / 50 crossfade (the SEM pot) would drop everything else by
-   6 dB per stage, 12 dB here. The end points are exact. */
+/* Morph 0..1 -> {LP, HP} weights: a plain crossfade, 1 - m and m, like the Oberheim SEM's mode pot. The sound tilts from
+   LP to HP across the whole knob through the notch at 50 % (where everything else is 6 dB down per stage, 12 dB here).
+   The end points are exact. */
 static void morph_weights(float m, float w[2])
 {
     if (m <= 0.0001f)
         m = 0.0f;
     else if (m >= 0.9999f)
         m = 1.0f;
-    w[0] = m <= 0.5f ? 1.0f : 2.0f * (1.0f - m);
-    w[1] = m >= 0.5f ? 1.0f : 2.0f * m;
+    w[0] = 1.0f - m;
+    w[1] = m;
 }
 
 /* Smoothed Morph (knob and block-rate sources) per voice, in the filter object at +0x88 (written only by the stock

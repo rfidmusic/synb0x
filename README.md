@@ -15,7 +15,7 @@ LP / notch / HP morph, glide and two modulation sources. Firmware version: **3.1
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `2965f0a17fd52a8a0681f59c8ac22df19c72f178cdcaa4641e52ba3ee5116f1a` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `42bc7be548678e9599c6c8db261bc9e72c9935e18042bbf20c52396cd6af3166` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -49,9 +49,9 @@ patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier rel
 ## What Synb0x adds
 
 - **Filter Morph**: a Morph knob moves the 24 dB/oct state-variable filter continuously from **LP (0 %)** through a
-  **notch (50 %)** to **HP (100 %)**, at an even level (LP stays full while HP comes in, then the reverse), and is a
-  **modulation destination**: LFO, VEL, KEY, FENV and the MIDI sources (pitch bend, mod wheel, volume, pan) move it
-  per voice. Res drives past noon as before. The Filter knob is cutoff across its whole travel: far left 20 Hz, far
+  **notch (50 %)** to **HP (100 %)** as a plain crossfade, like the Oberheim SEM's mode knob (the sound tilts steadily
+  across the whole knob; it is about 12 dB quieter at the notch), and is a **modulation destination**: LFO, VEL, KEY,
+  FENV and the MIDI sources (pitch bend, mod wheel, volume, pan) move it per voice. Res drives past noon as before. The Filter knob is cutoff across its whole travel: far left 20 Hz, far
   right 20.5 kHz, shown as **0-100 %**; new pads start fully open.
 - **Filter envelope**, per pad and per voice: **Attack, Decay, Sustain, Release** (0 ms to 60 s on a 0-100 curve like
   the amp envelope; Sustain is a level) and **Depth** (-100..+100, up to the cutoff's whole travel). It follows each
@@ -105,6 +105,9 @@ now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock fir
 
 ### Fixed in the 3.1.t update
 
+- **Morph** did little between its ends: it mixed LP and HP at full level, so the middle half sounded nearly
+  unfiltered apart from a narrow notch. It is now a plain crossfade (SEM style) that changes the sound across the whole
+  knob, about 12 dB quieter at the notch (50 %).
 - **Less CPU**: the soft clipping in the filter's Res drive and in Saturation no longer branches per sample (the
   M7's min / max instructions instead): the filter at high Res takes 21 % less, Saturation 14 % less. Same sound
   (Saturation bit-identical, the filter within -129 dB rounding).
@@ -135,10 +138,10 @@ compare builds rather than predict the load on the device (the on-screen CPU met
 | Per voice, unless noted | Stock 3.1.9 | Synb0x 3.1.t |
 |---|---|---|
 | Filter off (stock: knob centred; Synb0x: fully open, skipped) | 33 | 982 |
-| Filter running, stereo, Res at default | 6,325 | 13,745 |
-| Filter running, mono | 3,234 | 7,952 |
-| Filter running, stereo, Res 90 % (drive) | 6,325 | 21,569 |
-| Filter running, Morph between LP and HP | – | 15,972 |
+| Filter running, stereo, Res at default | 6,325 | 13,737 |
+| Filter running, mono | 3,234 | 7,944 |
+| Filter running, stereo, Res 90 % (drive) | 6,325 | 21,561 |
+| Filter running, Morph between LP and HP | – | 15,892 |
 | Filter envelope moving | – | no extra |
 | Sample reader, 256 frames at 1.5x pitch | 6,673 | 6,741 |
 | Saturation / Overdrive at 50 %, per pad | 11,209 | 12,419 |
