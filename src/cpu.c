@@ -4,7 +4,7 @@
  * The audio task (FUN_08041470) waits on a queue for the SAI DMA half / full interrupts, then renders 256 frames
  * (5.33 ms at 48 kHz) and waits again. This wraps that wait: busy = cycles from waking to waiting again,
  * period = cycles between wake-ups, both from the Cortex-M7 DWT cycle counter. Once a second the version label(s)
- * that show the version ("3.1.9-syn") get " avg/peak%" appended, the average and the worst 5.33 ms block of the last second, and so
+ * that show the version ("3.1.s") get " avg/peak%" appended, the average and the worst 5.33 ms block of the last second, and so
  * does the global cell's name (FUN_0809ad74, address 0x40), which is where the version actually shows on screen.
  * If the cycle counter never moves, the text reads " --%" instead, so a dead counter is visible, not silent.
  * The labels are filled in when their screens are built; the meter rewrites their text from the audio task (a plain
@@ -24,8 +24,8 @@ typedef void (*label_fn)(uint8_t *label, const char *s);
 #define fw_label_set ((label_fn)FN(0x080a3dec))      /* label: text object at +0x34, then redraw */
 
 /* The firmware version the screens show. patches/cave.py points the four stock references to the stock "3.1.9" (literal
-   pool words @0x0809af30, 0x080aeaf4, 0x080c55e8, 0x080c72c8) here; the stock slot only has room for 7 characters. */
-const char mod_version[] = "3.1.9-syn";
+   pool words @0x0809af30, 0x080aeaf4, 0x080c55e8, 0x080c72c8) here, so the name is not limited by the stock slot. */
+const char mod_version[] = "3.1.s";
 #define VERSION     mod_version
 #define TEXT_CHARS  0x31                             /* text object: characters */
 #define LABEL_TEXT  0x34                             /* label -> its text object */
@@ -80,12 +80,12 @@ static char *put_uint(char *p, unsigned v)
     return p;
 }
 
-/* "syn 34/71%", "syn --%" (the version after its '-', plus the load), or the full version before the first
-   second. Writes at most 25 bytes
+/* "3.1.s 34/71%", "3.1.s --%" (a version with a '-' is shortened to what follows it), or the version alone before
+   the first second. Writes at most 25 bytes
    (16 of version, " 100/100%", NUL); every destination has room: report()'s buffer 32, text objects 31 characters,
    the global cell's name 64. */
-/* With numbers the version is shortened to what follows its '-' ("syn"), so "syn 34/71%" stays within the 12 characters
-   of the original mod's "3.1.n 34/71%" and fits where the screens show the version; until then the full version shows. */
+/* With numbers a version containing '-' is shortened to what follows it, so the text stays within the 12 characters of
+   the original mod's "3.1.n 34/71%" that fit where the screens show the version. "3.1.s" has none: "3.1.s 34/71%". */
 static const char *short_version(void)
 {
     const char *v = VERSION;

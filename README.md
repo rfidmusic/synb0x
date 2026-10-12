@@ -3,7 +3,7 @@
 An unofficial feature mod for the **original 1010music Blackbox** (not the Blackbox 2), built on stock firmware 3.1.9.
 Synb0x is a fork of [j3threejay/blackbox-mod](https://github.com/j3threejay/blackbox-mod) by Justin Joe (build 3.1.n):
 it keeps most of that mod, drops four of its features and adds a synth-style filter section, glide and two modulation
-sources. Firmware version: **3.1.9-syn**.
+sources. Firmware version: **3.1.s** (released earlier the same day as 3.1.9-syn).
 
 > **Not affiliated with, endorsed by, or supported by 1010music.** This repository does not contain 1010music's
 > firmware. You supply your own copy, downloaded from 1010music, and patch it yourself. Use at your own risk: this is
@@ -15,7 +15,7 @@ sources. Firmware version: **3.1.9-syn**.
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.9-syn** (what `apply.py` writes) | `6c7d461fe3042d18a412e3013747c2642ef824db896768daa8fee60b196d5d45` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.s** (what `apply.py` writes) | `417aebb41fbd416c0216264a447a2d9a7c1d221a7128668848556e164653e807` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -25,7 +25,7 @@ certutil -hashfile BLACKBOX.bin SHA256   # Windows
 ```
 
 The same value is in [`SHA256SUMS`](SHA256SUMS) (`shasum -a 256 -c SHA256SUMS` next to your patched file) and in the
-patch file itself (`docs/blackbox-mod-3.1.9-syn.json`, `output_sha256`).
+patch file itself (`docs/blackbox-mod-3.1.s.json`, `output_sha256`).
 
 ## Install
 
@@ -36,12 +36,12 @@ patch file itself (`docs/blackbox-mod-3.1.9-syn.json`, `output_sha256`).
    python3 apply.py path/to/BLACKBOX.bin
    ```
 
-   It writes `out/blackbox-mod-3.1.9-syn/BLACKBOX.bin` and prints its SHA-256, which must match the table above. It
+   It writes `out/blackbox-mod-3.1.s/BLACKBOX.bin` and prints its SHA-256, which must match the table above. It
    refuses to run on anything but the stock 3.1.9 file, and refuses to overwrite it.
 3. Keep the stock `BLACKBOX.bin` somewhere safe. That file is your way back.
 4. Copy the patched `BLACKBOX.bin` to the root of the Blackbox's microSD card and install it the way you install any
    1010music firmware update (hold BACK + INFO while powering on).
-5. TOOLS and the startup screen show **3.1.9-syn**.
+5. The startup screen and TOOLS show **3.1.s**.
 
 **To go back to stock:** put the stock `BLACKBOX.bin` on the card and install it the same way.
 
@@ -75,12 +75,11 @@ patch file itself (`docs/blackbox-mod-3.1.9-syn.json`, `output_sha256`).
 - **Master compressor models**: Stock, Glue, Punch, Opto, Squash, Limit, plus a Comp Thresh setting.
 - **Reverb Type**: Plate (stock) or Room.
 - **Delay Type**: Delay (stock) or Munchi (a port of the CHOMPI TEMPO granular delay), with its own Duck control.
-- **CPU meter** next to the version: average / worst block of the last second, shown as `syn avg/peak%` so it fits on
-  screen.
+- **CPU meter** next to the version: average / worst block of the last second, as `3.1.s avg/peak%`.
 
 ## Differences from blackbox-mod 3.1.n
 
-| | blackbox-mod 3.1.n | Synb0x 3.1.9-syn |
+| | blackbox-mod 3.1.n | Synb0x 3.1.s |
 |---|---|---|
 | Pad-1 ducker (EXP1 / EXP2 / PUMP / LINR sources) | yes | **removed** |
 | Chords on the Keys screen | yes | **removed** |
@@ -91,7 +90,7 @@ patch file itself (`docs/blackbox-mod-3.1.9-syn.json`, `output_sha256`).
 | Main tab | Level, Filter, Pitch, Res / A D S R | Level, Pitch, Pan, Saturation / A D S R |
 | Clip / slicer pads, second voice | Fidelity read another pad's setting | **fixed** |
 | Pad settings capacity | 64 entries | 72 (the new settings need room) |
-| Version shown | 3.1.n | 3.1.9-syn |
+| Version shown | 3.1.n | 3.1.s |
 | Browser patcher | yes | no: Python `apply.py` only |
 
 **Presets:** they load. Synb0x's new settings save with the pad; presets made before it get the defaults (Type LP,
@@ -113,8 +112,8 @@ Needs `arm-none-eabi-gcc` and Python 3. Put your stock image at `firmware/BLACKB
 python3 patch.py solo slice filter fenv filttab glide splash cpu od comp fx2 munchi cave
 ```
 
-That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to 3.1.9-syn (the SHA-256 above) with Homebrew's
-arm-none-eabi-gcc 16.2. `python3 make_patch.py <image> 3.1.9-syn` turns an image into the release patch in `docs/`.
+That writes `out/<patchsets>/BLACKBOX.bin`, byte-identical to 3.1.s (the SHA-256 above) with Homebrew's
+arm-none-eabi-gcc 16.2. `python3 make_patch.py <image> 3.1.s` turns an image into the release patch in `docs/`.
 
 How it works: the stock image is left as it is. New code (`src/`) is compiled and appended after it, and a handful of
 call sites and table entries (`patches/`) are redirected to the new code. The Synb0x parts are `src/fenv.c` (filter

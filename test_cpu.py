@@ -133,7 +133,7 @@ e.call(0x0809AD74, APP, ADDR, INFO)
 check("before anything is measured: just the version", e.cstr(INFO) == V, e.cstr(INFO))
 
 # --- the version: 3.1.9-syn everywhere the stock "3.1.9" was referenced, never cut short by the meter
-check("version string is 3.1.9-syn", V == "3.1.9-syn", V)
+check("version string is 3.1.s", V == "3.1.s", V)
 lits = [e.r32(a) & 0xFFFFFFFF for a in (0x0809AF30, 0x080AEAF4, 0x080C55E8, 0x080C72C8)]
 check("all four stock references point at it", lits == [e.sym["mod_version"]] * 4, [hex(x) for x in lits])
 check(f"with numbers the labels read {SV} + load, 12 characters at most at ordinary loads", all(text(i).startswith(SV + " ") and len(text(i)) <= 12 for i in (0, 1)), [text(i) for i in range(3)])
