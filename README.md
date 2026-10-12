@@ -15,7 +15,7 @@ LP / notch / HP morph, glide and two modulation sources. Firmware version: **3.1
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `c2908f0817b4f133d7a4bd9e16ba8347bf49cb81ff03d9386170c5d163aeab87` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `2965f0a17fd52a8a0681f59c8ac22df19c72f178cdcaa4641e52ba3ee5116f1a` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -105,6 +105,10 @@ now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock fir
 
 ### Fixed in the 3.1.t update
 
+- **Less CPU**: the soft clipping in the filter's Res drive and in Saturation no longer branches per sample (the
+  M7's min / max instructions instead): the filter at high Res takes 21 % less, Saturation 14 % less. Same sound
+  (Saturation bit-identical, the filter within -129 dB rounding).
+
 - **Clicks**: turning Filter to fully open (where the filter switches off) and back mid-note clicked loudly, and moving
   Morph (by hand or by an LFO) made small zipper clicks. The filter now switches off only once its cutoff has glided
   all the way, fades back in when it restarts, and ramps the Morph mix sample by sample.
@@ -121,6 +125,27 @@ now loads as a low-pass at 640 Hz; turn Filter fully right to open it. Stock fir
 - Solo can stick: after un-soloing, pads may stay muted. Unmute them in Mute mode.
 - Presets saved with a Fidelity value on an older mod build may read a different value.
 - The **CPU meter** numbers do not show on the device yet (the version shows alone); under investigation.
+
+## CPU use
+
+Measured under the Unicorn emulator on the same audio for stock 3.1.9 and this build: executed instructions per
+256-frame block (5.33 ms), the code the mod replaces or wraps on the audio path. Instructions are not cycles, so these
+compare builds rather than predict the load on the device (the on-screen CPU meter does not work yet).
+
+| Per voice, unless noted | Stock 3.1.9 | Synb0x 3.1.t |
+|---|---|---|
+| Filter off (stock: knob centred; Synb0x: fully open, skipped) | 33 | 982 |
+| Filter running, stereo, Res at default | 6,325 | 13,745 |
+| Filter running, mono | 3,234 | 7,952 |
+| Filter running, stereo, Res 90 % (drive) | 6,325 | 21,569 |
+| Filter running, Morph between LP and HP | – | 15,972 |
+| Filter envelope moving | – | no extra |
+| Sample reader, 256 frames at 1.5x pitch | 6,673 | 6,741 |
+| Saturation / Overdrive at 50 %, per pad | 11,209 | 12,419 |
+
+The 24 dB, two-stage filter costs about twice the stock 12 dB biquad while it runs (2.5x mid-Morph, 3.4x at high
+Res); off, it costs next to nothing. As a rough scale, sixteen voices all filtering at once use about 5 % more of the
+audio budget than stock (about 10 % more at high Res), assuming a 480 MHz core at about one instruction per cycle.
 
 ## Build from source
 
