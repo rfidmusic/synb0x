@@ -48,7 +48,7 @@ PAD_ROW, PAD_COL = 1, 2
 
 
 def set_pad(interp=0, row=PAD_ROW, col=PAD_COL, sat=0, ftype=LP, attack=0, decay=300, sustain=0, release=300, depth=0,
-            with_fenv=True, routes=()):
+            with_fenv=True, routes=(), ad=None):
     """The app's record of the pad (what the screen shows and presets save)."""
     store = APP_PADS + row * 0xF0 + col * 0x30
     arr = ARR + (row * 4 + col) * 0x80
@@ -56,6 +56,8 @@ def set_pad(interp=0, row=PAD_ROW, col=PAD_COL, sat=0, ftype=LP, attack=0, decay
     if with_fenv:
         ent += [(P_FMORPH, ftype), (P_FTYPE, 0), (P_FATTACK, attack), (P_FDECAY, decay), (P_FSUSTAIN, sustain), (P_FRELEASE, release),
                 (P_FDEPTH, depth)]
+    if ad is not None:                               # AD Attack, AD Decay (, LFO Mode): side by side, as the defaults store them
+        ent += [(0x1EC, ad[0]), (0x1ED, ad[1])] + ([(0x1EE, ad[2])] if len(ad) > 2 else [])
     e.uc.mem_write(arr, b"".join(struct.pack("<HHi", i, 0, v) for i, v in ent))
     e.w32(store + 4, arr)
     e.uc.mem_write(store + 10, struct.pack("<H", len(ent)))
@@ -714,6 +716,154 @@ for v in (0, 1):
     l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
     check(f"clip / slicer voice {v + 1}: its pad's settings apply (crunch), amp stage read (envelope started)",
           len(set(l)) <= N // 4 + 1 and level(obj) > 0.0, (len(set(l)), level(obj)))
+
+# --- the AD envelope (modulation source AD) and LFO Mode 1-Shot: both run in the voice's LFO update, the first thing a
+#     voice does per block (lfo_update_a / _b), before it reads its modulated parameters. AD level at filter object
+#     + 0x44, stage + 0x4f; the voice's amp stage at filter object - 0x7c (sample voice).
+LFO = OBJ - 0xA8 + 0x4E8
+AMP_A = OBJ - 0x7C
+
+
+def lfo_stub():                                      # the stock LFO update: read, then phase += step x frames
+    ph, st = e.r32(e.arg(0) + 0x10) & 0xFFFFFFFF, e.r32(e.arg(0) + 0x14) & 0xFFFFFFFF
+    e.w32(e.arg(0) + 0x10, (ph + st * e.arg(1)) & 0xFFFFFFFF)
+
+
+e.stub(0x0806F108, lfo_stub)
+
+
+def vamp(stage):
+    amp(stage)
+    e.uc.mem_write(AMP_A, bytes([stage]))
+
+
+def ad_level(obj=OBJ):
+    return struct.unpack("<f", e.uc.mem_read(obj + 0x44, 4))[0]
+
+
+def block(x=None, n=256):
+    """one voice block: the LFO update (AD advances), then the filter (which also fills the settings cache)"""
+    e.call("lfo_update_a", LFO, n)
+    if x is None:
+        run([0.0] * n, silent=True)
+    else:
+        run(x, x)
+
+
+def ad_run(blocks, n=256):
+    out = []
+    for _ in range(blocks):
+        block(n=n)
+        out.append(ad_level())
+    return out
+
+
+def fresh():
+    """a voice whose settings cache has never seen this pad (its first block fills it)"""
+    e.uc.mem_write(OBJ + 0x74, bytes(16))
+
+
+reset()
+vamp(1)
+setup(1.0, ad=(300, 100))                           # Attack 1.62 s, Decay 0.06 s
+fresh()
+block()
+check("a block whose settings aren't known yet: AD waits (no start with wrong settings)", ad_level() == 0.0, ad_level())
+ta, td = seconds(300), seconds(100)
+lv = ad_run(int(ta * FS / 256) - 3)
+check(f"AD attack: linear, {lv[-1]:.3f} after {len(lv)} blocks of {ta * FS / 256:.0f}",
+      all(b > a for a, b in zip(lv, lv[1:])) and abs(lv[-1] - len(lv) * 256 / (ta * FS)) < 0.005, lv[-1])
+vamp(4)                                             # note released during the attack: AD keeps going (one-shot)
+lv2 = ad_run(4)
+check("AD ignores the note-off: keeps rising (past where the note ended), then decays",
+      max(lv2) > lv[-1] and lv2[-1] < max(lv2) and e.r8(OBJ + 0x4F) == 2, lv2)
+dec = ad_run(int(td * FS / 256) + 2)
+check(f"AD decay: exponential, at 0 once its time ({td * 1000:.0f} ms) has passed",
+      dec[-1] == 0.0 and all(b <= a for a, b in zip(dec, dec[1:])), dec)
+stage = e.r8(OBJ + 0x4F)
+check("AD then rests (stage done) at 0", stage == 3 and ad_run(3) == [0.0] * 3, stage)
+vamp(3)
+block()
+vamp(1)                                             # fresh amp attack without a voice start (mono / legato retrigger)
+lv3 = ad_run(2)
+check("AD retriggers on a fresh amp attack (legato / mono)", lv3[0] > 0.0, lv3)
+
+reset()
+vamp(0)                                             # a voice that isn't playing: AD stays at rest
+setup(1.0, ad=(0, 300))
+check("AD does not run for a voice that isn't playing", ad_run(3) == [0.0] * 3)
+reset()                                             # a new note (voice start zeroes +0x40..+0x5f), Attack 0
+vamp(1)
+setup(1.0, ad=(0, 300))
+block()                                             # the cache knows this pad (it did on the last note)
+reset()
+vamp(1)
+e.call("lfo_update_a", LFO, 32)                     # the note's very first step, before anything reads it
+first = ad_level()
+check(f"Attack 0: full from the note's first step ({first:.3f}), so its first block already reads it",
+      first == 1.0, first)
+lv4 = ad_run(1)
+check("Attack 0: then straight into the 1.62 s decay, no hold", 0.98 < lv4[0] < 1.0, lv4)
+
+reset()
+vamp(1)
+setup(1.0)                                           # a record without AD entries: the defaults
+fresh()
+block()
+lv5 = ad_run(200)
+check(f"AD defaults (Attack 0, Decay 1.62 s) for a record without them: {lv5[0]:.3f} -> {lv5[-1]:.3f}",
+      lv5[0] > 0.98 and abs(lv5[-1] - 0.01 ** (200 * 256 / FS / seconds(300))) < 0.01, (lv5[0], lv5[-1]))
+
+# AD -> Morph route: Morph follows the block's AD value
+reset()
+vamp(1)
+setup(-0.2, 0.5, ad=(100, 300), routes=[(2, 0x1E9, 0, 1000)])   # source AD, dest Morph, slot 0, +100 %
+fresh()
+x = sine(300, 256)
+ws = []
+for b in range(12):
+    block(x)
+    ws.append((ad_level(), struct.unpack("<f", e.uc.mem_read(OBJ + 0x90, 4))[0]))
+check("AD -> Morph: the HP weight follows the AD level block by block (Morph 0 + 100 % x AD)",
+      all(abs(w - a) < 0.02 for a, w in ws[1:]) and max(a for a, _ in ws) > 0.5, ws[:6])
+
+# FENV untouched by AD sharing its object: both run side by side
+reset()
+vamp(1)
+setup(1.0, attack=0, decay=300, sustain=500, ad=(300, 300))
+fresh()
+block()
+block()
+check("FENV and AD side by side: FENV at full (attack 0), AD just starting (attack 1.62 s)",
+      level() > 0.98 and 0.0 < ad_level() < 0.01, (level(), ad_level()))
+
+# --- LFO Mode 1-Shot: one cycle from the note start (Key Trig sets the phase to 0), then it holds
+def lfo_run(mode, blocks, step):
+    reset()
+    vamp(1)
+    setup(1.0, ad=(0, 300, mode))
+    fresh()
+    run([0.0] * 256, silent=True)                   # the cache learns this pad (as on the pad's earlier notes)
+    e.w32(LFO + 0x10, 0)                            # Key Trig: phase 0 at the note start
+    e.w32(LFO + 0x14, step)
+    out = []
+    for _ in range(blocks):
+        block()
+        out.append((e.r32(LFO + 0x10) & 0xFFFFFFFF, e.r32(LFO + 0x14) & 0xFFFFFFFF))
+    return out
+
+
+step = int(2 ** 32 * 4.0 / 48000)                    # 4 Hz: one cycle in 46.9 blocks
+loop = lfo_run(0, 60, step)
+check("LFO Mode Loop: the LFO keeps cycling (the stock LFO)", loop[-1][1] == step and any(b[0] < a[0] for a, b in zip(loop, loop[1:])))
+shot = lfo_run(1, 60, step)
+wrap = next(i for i, (p, s_) in enumerate(shot) if s_ == 0)
+check(f"LFO Mode 1-Shot: stops after one cycle (block {wrap + 1} of {2 ** 32 / (step * 256):.1f}), held at the cycle start",
+      wrap + 1 == math.ceil(2 ** 32 / (step * 256)) and all(p == 0 and s_ == 0 for p, s_ in shot[wrap:]), shot[wrap - 1:wrap + 2])
+e.w32(LFO + 0x14, step)                              # the next note start recomputes the step (FUN_0806ef50)
+e.w32(LFO + 0x10, 0)
+block()
+check("1-Shot: the next note runs its cycle again", e.r32(LFO + 0x10) & 0xFFFFFFFF == step * 256)
 
 print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)

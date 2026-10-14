@@ -48,6 +48,7 @@ typedef void (*list_route_fn)(void *list, unsigned dest, int slot, unsigned sour
 #define TABS     6
 #define TAB_GRAN 3
 #define TAB_POS  1
+#define TAB_LFO  2               /* shown as "Mod": the LFO and the AD envelope */
 #define TAB_FILT 5
 #define TAB_IDS  0x12f           /* button id of tab 0; Filt = 0x134 */
 #define LABELS   ((const char *const *)0x080f1300)   /* stock Main, Pos, LFO, Gran, Conf */
@@ -81,7 +82,7 @@ void filt_tabs(uint8_t *bar, uint8_t *slot4, unsigned index)
         uint8_t *button = slot4 + ((int)t - 4) * SLOT;
         set_id_fn set_id = *(set_id_fn *)(*(uint8_t **)button + 0x24);
         set_id(button, TAB_IDS + t);
-        fw_set_label(button, t == TAB_FILT ? "Filt" : LABELS[t]);
+        fw_set_label(button, t == TAB_FILT ? "Filt" : t == TAB_LFO ? "Mod" : LABELS[t]);
         if (on_bar(index, t))
             fw_bar_add(bar, button);
     }
@@ -99,7 +100,20 @@ static const uint16_t filt_ids[8] = {
 int filt_page(void *app, const uint8_t *ref, void *list, int tab)
 {
     unsigned kind = *(const uint16_t *)(ref + 4);
-    if (tab != TAB_FILT || kind == 0x40 || kind == 0x41 || kind == 0x42 || ((kind >> 8) & 0x1f) != 0)
+    int pad = !(kind == 0x40 || kind == 0x41 || kind == 0x42 || ((kind >> 8) & 0x1f) != 0);
+    if (tab == TAB_LFO && pad) {
+        /* the Mod tab: the stock LFO page (Waveform, Rate, Depth, Beat Sync / Key Trig), then LFO Mode and the AD
+           envelope, filling the bottom row: Key Trig, LFO Mode, AD Attack, AD Decay */
+        int r = fw_page(app, ref, list, tab);
+        if (r) {
+            const void *store = fw_pad_store(app, ref);
+            fw_list_add(list, P_LFOMODE, fw_setting(store, P_LFOMODE));
+            fw_list_add(list, P_ADATTACK, fw_setting(store, P_ADATTACK));
+            fw_list_add(list, P_ADDECAY, fw_setting(store, P_ADDECAY));
+        }
+        return r;
+    }
+    if (tab != TAB_FILT || !pad)
         return fw_page(app, ref, list, tab);
     fw_list_clear(list);
     const void *store = fw_pad_store(app, ref);

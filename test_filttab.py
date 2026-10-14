@@ -40,7 +40,7 @@ e.stub(0x080C4ED8, lambda: events.append(("add", (e.arg(1) - SLOTS) // 0xA0, e.r
 e.w32(VTBL + 0x24, SET_ID | 1)
 for s in range(6):
     e.w32(SLOTS + s * 0xA0, VTBL)
-names = ["Main", "Pos", "LFO", "Gran", "Conf", "Filt"]
+names = ["Main", "Pos", "Mod", "Gran", "Conf", "Filt"]       # LFO is shown as Mod
 want_tabs = {0: [0, 5, 1, 2, 4], 1: [0, 5, 1, 2, 3, 4], 2: [0, 5, 2, 4]}
 for bar in range(3):
     events.clear()
@@ -49,7 +49,7 @@ for bar in range(3):
     labels = {s: v for k, s, v in events if k == "label"}
     added = [s for k, s, _ in events if k == "add"]
     counts = {c for k, _, c in events if k == "add"}
-    check(f"bar {bar}: all six buttons named (ids 0x12f..0x134, Main..Conf, Filt)",
+    check(f"bar {bar}: all six buttons named (ids 0x12f..0x134, Main, Pos, Mod (was LFO), Gran, Conf, Filt)",
           ids == {s: 0x12F + s for s in range(6)} and labels == dict(enumerate(names)), (ids, labels))
     shown = list(reversed(added))                    # the bar places the first insert rightmost
     check(f"bar {bar}: on screen " + " ".join(names[t] for t in shown), shown == want_tabs[bar], shown)
@@ -73,7 +73,7 @@ def pad_record(row, col, values):
 
 
 vals = {4: 800, P_FILTER: -250, P_RES: 640, P_FMORPH: 620, P_FDEPTH: -300, P_FATTACK: 10, P_FDECAY: 20, P_FSUSTAIN: 30,
-        P_FRELEASE: 40, 0x8B: 0}
+        P_FRELEASE: 40, 0x8B: 0, 0x1EC: 150, 0x1ED: 450, 0x1EE: 1}
 pad_record(2, 1, vals)
 e.uc.mem_write(REF, struct.pack("<IH", 0, 2 << 4 | 1))   # pad ref: +4 = row << 4 | col, class 0
 calls.clear()
@@ -112,12 +112,21 @@ e.stub(0x080A5038, lambda: calls.append(("add", e.arg(1), struct.unpack("<i", st
 for tab in range(5):
     calls.clear()
     e.call("filt_page", APP, REF, 0x24047000, tab)
-    check(f"tab {tab}: stock page list", calls == [("stock", tab)], calls)
+    if tab == 2:
+        check("tab 2 (Mod): the stock LFO page, then LFO Mode, AD Attack, AD Decay from the pad's record "
+              "(bottom row: Key Trig, LFO Mode, AD Attack, AD Decay)",
+              calls == [("stock", 2), ("add", 0x1EE, vals.get(0x1EE, 0)), ("add", 0x1EC, vals.get(0x1EC, 0)),
+                        ("add", 0x1ED, vals.get(0x1ED, 0))], calls)
+    else:
+        check(f"tab {tab}: stock page list", calls == [("stock", tab)], calls)
 for kind, what in ((0x40, "global settings"), (0x41, "kind 0x41"), (0x0100 | 0x21, "an FX cell")):
     e.uc.mem_write(REF + 4, struct.pack("<H", kind))
     calls.clear()
     e.call("filt_page", APP, REF, 0x24047000, 5)
     check(f"tab 5 of {what}: left to stock", calls == [("stock", 5)], calls)
+    calls.clear()
+    e.call("filt_page", APP, REF, 0x24047000, 2)
+    check(f"tab 2 of {what}: left to stock (no AD knobs)", calls == [("stock", 2)], calls)
 
 # --- grid or list: the helpers' flags, then the real patched code paths
 for t in range(6):

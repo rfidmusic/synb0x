@@ -15,7 +15,7 @@ LP / notch / HP morph, glide and two modulation sources. Firmware version: **3.1
 | File | SHA-256 |
 |---|---|
 | Stock `BLACKBOX.bin` from 1010music's **3.1.9** zip (what you patch) | `281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d` |
-| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `226b86a1fc32f85f4d606cdd7720c9919f249c0b732659ce6d4ab87aa7a7864b` |
+| Patched `BLACKBOX.bin`, **Synb0x 3.1.t** (what `apply.py` writes) | `4fe8f429d6e8ca61b467608cf484f9587fc2d67641a702c6238749508230f3a8` |
 
 The patcher checks both itself and prints the result's SHA-256. To check a file by hand:
 
@@ -64,9 +64,16 @@ patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier rel
   voice's amp envelope: it starts with the note and releases when the amp envelope does (note off, one-shot end, choke).
 - **Filt tab** on the pad screen, right after Main: Filter, Res, Morph, Depth / Attack, Decay, Sustain, Release, with
   modulation indicators. Main now reads Level, Pitch, Pan, Saturation / Attack, Decay, Sustain, Release.
-- **Modulation sources KEY and FENV** in every pad's Source list: KEY is key follow ((note - C3) / 60, the engine's own
-  per-voice source that stock never listed); FENV is the voice's filter envelope, so it can also drive Pitch, Level,
-  Pan, Morph and the rest.
+- **Modulation sources KEY, FENV and AD** in every pad's Source list: KEY is key follow ((note - C3) / 60, the engine's
+  own per-voice source that stock never listed); FENV is the voice's filter envelope, so it can also drive Pitch, Level,
+  Pan, Morph and the rest; **AD** is a one-shot attack / decay envelope per voice (below), for any destination.
+- **Mod tab** (the LFO tab, renamed): the stock LFO (Waveform, Rate, Depth, Beat Sync / Key Trig), then **1-Shot**,
+  **AD Attack** and **AD Decay** on the bottom row.
+  - **AD envelope**: rises over AD Attack, then falls to 0 over AD Decay (each 0 ms to 60 s on the 0-100 curve; defaults
+    0 and 30 = 1.6 s). It starts with each note, runs to the end even after note-off, and restarts on a mono / legato
+    retrigger. Route it with the modulation matrix (Source **AD**); the route's amount sets depth and direction.
+  - **1-Shot** button: the LFO runs one cycle from the note start, then holds where it started, until the next note
+    (with Key Trig on, the cycle starts at the note). Off = the stock looping LFO.
 - **Glide** (sample and multisample pads), on the Conf tab after Poly Mode: **Glide** Off / Always / Legato and
   **Glide Time** (0-100 on a curve, up to 10 s; a slide takes the same time whatever the interval). Always slides every
   note from the pad's last pitch; Legato only while another note of the pad is held, including the stock Legato
@@ -95,7 +102,7 @@ patch file itself (`docs/blackbox-mod-3.1.t.json`, `output_sha256`). Earlier rel
 | Note conditions (1:2 … 8:8) | yes | **removed** |
 | Sequencer fix (notes just ahead of the playhead) | yes | **removed** |
 | Filter knob | centre = off, left LP, right HP | **cutoff**, 0-100 %; **Morph** LP → notch → HP, modulatable |
-| Filter envelope, Filt tab, KEY / FENV sources, Glide | – | **new** |
+| Filter envelope, Filt tab, KEY / FENV / AD sources, Mod tab with LFO 1-Shot, Glide | – | **new** |
 | Main tab | Level, Filter, Pitch, Res / A D S R | Level, Pitch, Pan, Saturation / A D S R |
 | Clip / slicer pads, second voice | Fidelity read another pad's setting | **fixed** |
 | Pad settings capacity | 64 entries | 72 (the new settings need room) |
@@ -133,6 +140,12 @@ are doubled so they sweep as far. Works for 3.1.s and 3.1.t. It notes what it ca
 more than 100 %, and a centred Filter with modulation on it (stock opened a low-pass one way and a high-pass the
 other). The slope stays Synb0x's 24 dB/oct (stock 12 dB/oct).
 
+### New in the 3.1.t update
+
+- **AD envelope** (modulation source AD) and the LFO **1-Shot** button, on the LFO tab, now called **Mod** (see above).
+  Presets from before get AD Attack 0, AD Decay 30 and 1-Shot off; stock firmware ignores the new settings. Granular
+  pads apply modulation per grain, so a fast AD shows there as a grain or so later.
+
 ### Fixed in the 3.1.t update
 
 - The **CPU meter** now shows on the device: the readings are put on the version labels by the screen task instead of
@@ -167,12 +180,13 @@ compare builds rather than predict the load on the device (the on-screen CPU met
 
 | Per voice, unless noted | Stock 3.1.9 | Synb0x 3.1.t |
 |---|---|---|
-| Filter off (stock: knob centred; Synb0x: fully open, skipped) | 33 | 982 |
-| Filter running, stereo, Res at default | 6,325 | 13,737 |
-| Filter running, mono | 3,234 | 7,944 |
-| Filter running, stereo, Res 90 % (drive) | 6,325 | 21,561 |
-| Filter running, Morph between LP and HP | – | 15,892 |
+| Filter off (stock: knob centred; Synb0x: fully open, skipped) | 33 | 1,016 |
+| Filter running, stereo, Res at default | 6,325 | 13,779 |
+| Filter running, mono | 3,234 | 7,994 |
+| Filter running, stereo, Res 90 % (drive) | 6,325 | 21,603 |
+| Filter running, Morph between LP and HP | – | 15,934 |
 | Filter envelope moving | – | no extra |
+| AD envelope moving (on top of the above) | – | +325 |
 | Sample reader, 256 frames at 1.5x pitch | 6,673 | 6,741 |
 | Saturation / Overdrive at 50 %, per pad | 11,209 | 12,419 |
 

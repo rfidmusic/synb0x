@@ -61,10 +61,19 @@ want = [("list", P_FTYPE, ["LP", "HP", "BP"], "Type:", "fenvtype"),
         ("num", P_FRELEASE, 8, "Release:", 0, 1000, "fenvrel"),
         ("num", P_FDEPTH, 9, "Depth:", -1000, 1000, "fenvdepth"),
         ("list", 0x1E7, ["Off", "Always", "Legato"], "Glide:", "glidemode"),
-        ("num", 0x1E8, 8, "Glide Time:", 0, 1000, "glidetime")]
-check("Type (hidden, for old presets), Morph, A/D/S/R/Depth, Glide, Glide Time registered with unique xml names", regs[1:] == want, regs[1:])
+        ("num", 0x1E8, 8, "Glide Time:", 0, 1000, "glidetime"),
+        ("num", 0x1EC, 8, "AD Attack:", 0, 1000, "adattack"),
+        ("num", 0x1ED, 8, "AD Decay:", 0, 1000, "addecay"),
+        ("num", 0x1EE, 4, "1-Shot", 0, 1000, "lfomode")]                 # a button (type 4), like stock Key Trig
+check("Type (hidden, for old presets), Morph, A/D/S/R/Depth, Glide, Glide Time, AD Attack / Decay, 1-Shot button registered "
+      "with unique xml names", regs[1:] == want and len({r[-1] for r in regs}) == len(regs), regs[1:])
 check("new ids are below the 500-slot parameter table", all(r[1] < 500 for r in regs))
 check("the hook replaces the Filter registration call", e.r16(0x0808D59C) != 0xF7FE)
+sys.path.insert(0, "patches")
+from thumb import bl as _bl                         # noqa: E402  (the patcher's own BL encoder)
+sites = {0x08056FF8: "lfo_update_a", 0x0805800A: "lfo_update_a", 0x08066838: "lfo_update_b"}
+check("the three LFO updates (sample, multisample, clip / slicer voices) call lfo_update_a / _b",
+      all(bytes(e.uc.mem_read(a, 4)) == _bl(a, e.sym[f]) for a, f in sites.items()))
 
 # --- capacity: movs r1,#64 -> #72 at both allocation sites
 check("store capacity raised to 72 at 0x080949f0 and 0x08093f26",
@@ -97,20 +106,27 @@ for kind, name in ((3, "sample pad"), (0x4C, "empty pad")):
           [ent.get(i) for i in (0x1E9, P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH)])
     check(f"{name}: stock Res default unchanged (500)", ent.get(0x11) == 500, ent.get(0x11))
     if kind == 3:
-        check(f"sample pad: stock entries after Filter still present (0xdc last), 68 entries", 0xDC in ent and count == 68, count)
+        check(f"sample pad: stock entries after Filter still present (0xdc last), 71 entries (of 72)", 0xDC in ent and count == 71, count)
     check(f"{name}: Glide Off, Glide Time 200", (ent.get(0x1E7), ent.get(0x1E8)) == (0, 200), (ent.get(0x1E7), ent.get(0x1E8)))
+    arr = e.r32(STORE + 4)
+    ids = [e.r16(arr + 8 * i) for i in range(count)]
+    check(f"{name}: AD Attack 0, AD Decay 300, LFO Mode Loop, stored side by side in that order",
+          (ent.get(0x1EC), ent.get(0x1ED), ent.get(0x1EE)) == (0, 300, 0)
+          and ids.index(0x1ED) == ids.index(0x1EC) + 1 and ids.index(0x1EE) == ids.index(0x1EC) + 2,
+          (ent.get(0x1EC), ent.get(0x1ED), ent.get(0x1EE)))
+    check(f"{name}: the record still fits (capacity 72)", count <= 72, count)
     e.call(0x08093E9C, STORE, P_FDECAY)
     check(f"{name}: stock lookup finds the new entries", e.uc.reg_read(UC_ARM_REG_R0) == 300)
 
 # --- modulation: KEY and FENV in the Source list
 names, codes = e.r32(0x0808CCC0), e.r32(0x0809A69C)
-listed = [(e.cstr(e.r32(names + 4 * i)), e.r16(codes + 2 * i)) for i in range(10)]
-check("Source list: stock eight, then KEY (0xe) and FENV (1)", listed[:2] == [("none", 0), ("VEL", 0xD)] and
-      listed[8:] == [("KEY", 0xE), ("FENV", 1)], listed)
+listed = [(e.cstr(e.r32(names + 4 * i)), e.r16(codes + 2 * i)) for i in range(11)]
+check("Source list: stock eight, then KEY (0xe), FENV (1) and AD (2)", listed[:2] == [("none", 0), ("VEL", 0xD)] and
+      listed[8:] == [("KEY", 0xE), ("FENV", 1), ("AD", 2)], listed)
 check("all five list-table references point at the new tables",
       e.r32(0x080B6964) == names and e.r32(0x080B696C) == codes and e.r32(0x080B7B00) == codes)
-check("list length 10 at the registration and both screen loops",
-      e.r16(0x0808CB3E) == 0x210A and e.r16(0x080B67CC) == 0x2B0A and e.r16(0x080B7994) == 0x200A)
+check("list length 11 at the registration and both screen loops",
+      e.r16(0x0808CB3E) == 0x210B and e.r16(0x080B67CC) == 0x2B0B and e.r16(0x080B7994) == 0x200B)
 
 PADA, VOICE, MSG, PADB = 0x24040000, 0x24041000, 0x24042000, 0x24043000
 F32 = lambda a: struct.unpack("<f", e.uc.mem_read(a, 4))[0]
@@ -152,11 +168,38 @@ route("fenv_mod_msg_a", PADA, 200, 1, 0, 0)                    # none: row remov
 n = e.r32(PADA + 0x54C)
 check("Source none removes the FENV row", n == 1 and e.r16(PADA + 0x4F2) == 0xE, n)
 
+# AD (source 2): the same path, its object at filter object + 0x40 (value at + 0x44)
+e.uc.mem_write(PADA, bytes(0x1000))
+e.uc.mem_write(VOICE, bytes(0x600))
+route("fenv_mod_msg_a", PADA, 0x5C, 2, 2, 250)                 # AD -> Pitch, slot 2, +25
+route("fenv_mod_msg_a", PADA, 200, 0, 1, 500)                  # FENV -> Filter alongside
+rows = sorted((e.r16(PADA + 0x4F0 + 12 * i), e.r16(PADA + 0x4F2 + 12 * i), e.r8(PADA + 0x4F4 + 12 * i)) for i in range(e.r32(PADA + 0x54C)))
+check("sample pad: AD kept as its own voice row (dest pitch 0x5c, source 2, slot 2) next to FENV",
+      rows == [(0x5C, 2, 2), (200, 1, 0)], rows)
+e.call("fenv_voice_copy", PADA, VOICE)
+AD_OBJ = VOICE + 0xA8 + 0x40
+check("voice copy: Pitch slot 2 = the voice's AD object (filter object + 0x40), amount 0.25; FENV untouched",
+      slots(VOICE + 0x288)[2] == (AD_OBJ, 0.25) and slots(VOICE + 0x2F8)[0] == (FENV_OBJ, 0.5),
+      (slots(VOICE + 0x288), slots(VOICE + 0x2F8)))
+e.uc.mem_write(VOICE + 0x288 + 0x2C, struct.pack("<f", 10.0))
+e.uc.mem_write(VOICE + 0x288 + 0x28, struct.pack("<f", -10.0))
+e.uc.mem_write(AD_OBJ + 4, struct.pack("<f", 0.6))             # AD level (filter object + 0x44)
+e.call(0x0806FB30, VOICE + 0x288)
+got = struct.unpack("<f", struct.pack("<I", e.uc.reg_read(__import__("unicorn").arm_const.UC_ARM_REG_S0)))[0]
+check(f"stock modulated read of Pitch: 0.25 x AD 0.6 = {got:.3f}", abs(got - 0.15) < 1e-6, got)
+route("fenv_mod_msg_a", PADA, 0x5C, 2, 0, 0)
+check("Source none removes the AD row", e.r32(PADA + 0x54C) == 1 and e.r16(PADA + 0x4F2) == 1, e.r32(PADA + 0x54C))
+
 e.uc.mem_write(PADB, bytes(0x1000))
 route("fenv_mod_msg_b", PADB, 200, 2, 1, -400)                 # clip / slicer pad: FENV -> Filter, slot 2, -40
 v0, v1 = slots(PADB + 0x448)[2], slots(PADB + 0x858)[2]
 check("clip / slicer: both voices' Filter slot 2 = their own FENV object, amount -0.4",
       v0 == (PADB + 0x3AC + 0x44, f32(-0.4)) and v1 == (PADB + 0x7BC + 0x44, f32(-0.4)), (v0, v1))
+route("fenv_mod_msg_b", PADB, 0x62, 1, 2, 700)                 # clip / slicer: AD -> Pan, slot 1, +70
+a0, a1 = slots(PADB + 0x26C)[1], slots(PADB + 0x26C + 0x410)[1]
+check("clip / slicer: both voices' Pan slot 1 = their own AD object (+0x40), amount 0.7 x the pan scale 2",
+      a0[0] == PADB + 0x3AC + 0x40 and a1[0] == PADB + 0x7BC + 0x40 and abs(a0[1] - 1.4) < 1e-6 and abs(a1[1] - 1.4) < 1e-6,
+      (a0, a1))
 route("fenv_mod_msg_b", PADB, 0x11, 0, 0xE, 1000)              # KEY -> Res: stock
 check("clip / slicer: KEY -> Res still routed by stock (pad + 0x2b0)", slots(PADB + 0x484)[0][0] == PADB + 0x2B0)
 
@@ -164,7 +207,7 @@ check("clip / slicer: KEY -> Res still routed by stock (pad + 0x2b0)", slots(PAD
 APPB, REFB, OUT = 0x24010000, 0x24046000, 0x24046100
 store = APPB + 0x1840 + 1 * 0xF0 + 2 * 0x30
 ARRB = 0x24052000
-ours = [P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH, 0x1E7, 0x1E8]
+ours = [P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH, 0x1E7, 0x1E8, 0x1EC, 0x1ED, 0x1EE]
 e.uc.mem_write(ARRB, b"".join(struct.pack("<HHi", pid, 0, 100 + k) for k, pid in enumerate(ours)))
 e.w32(store + 4, ARRB)
 e.uc.mem_write(store + 10, struct.pack("<H", len(ours)))

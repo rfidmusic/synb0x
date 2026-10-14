@@ -25,6 +25,7 @@ typedef void (*store_add_fn)(void *store, int param, int value);
 
 #define TYPE_UNIPOLAR 8          /* 0..1000, shown 0.0..100.0 (the amp envelope's knobs) */
 #define TYPE_BIPOLAR  9          /* -1000..1000, shown -100.0..100.0 (the Filter knob) */
+#define TYPE_TOGGLE   4          /* on / off button, stores 0 / 1 (stock Key Trig, Beat Sync, MultiSam) */
 
 void glide_register(void *table);   /* glide.c: Glide and Glide Time, registered with the filter parameters */
 
@@ -45,6 +46,10 @@ void fenv_register(void *table, int param, int type, const char *label, int min,
     fw_register_num(table, P_FRELEASE, TYPE_UNIPOLAR, "Release:", 0, 1000, "fenvrel");
     fw_register_num(table, P_FDEPTH, TYPE_BIPOLAR, "Depth:", -1000, 1000, "fenvdepth");
     glide_register(table);
+    /* the AD envelope (modulation source AD), on the Mod tab after Key Trig */
+    fw_register_num(table, P_ADATTACK, TYPE_UNIPOLAR, "AD Attack:", 0, 1000, "adattack");
+    fw_register_num(table, P_ADDECAY, TYPE_UNIPOLAR, "AD Decay:", 0, 1000, "addecay");
+    fw_register_num(table, P_LFOMODE, TYPE_TOGGLE, "1-Shot", 0, 1000, "lfomode");   /* a button, like Key Trig */
 }
 
 /* Replaces the "Filter defaults to 0" entry of both pad record types (bl @0x080940de type 3, @0x08094312 type 0x4c):
@@ -62,31 +67,37 @@ void fenv_defaults(void *store, int param, int value)
     fw_store_add(store, P_FDEPTH, DEF_FDEPTH);
     fw_store_add(store, P_GLIDE, DEF_GLIDE);
     fw_store_add(store, P_GLIDETIME, DEF_GLIDETIME);
+    fw_store_add(store, P_ADATTACK, DEF_ADATTACK);       /* added as a pair: filter.c finds Decay right after Attack */
+    fw_store_add(store, P_ADDECAY, DEF_ADDECAY);
+    fw_store_add(store, P_LFOMODE, DEF_LFOMODE);         /* right after the pair: filter.c reads it from there too */
 }
 
 /*
- * Modulation sources KEY and FENV in the pad modulation Source list (param 0x53).
+ * Modulation sources KEY, FENV and AD in the pad modulation Source list (param 0x53).
  *
  * KEY is stock engine source 0xe ("key" in presets): per voice, (note - 60) / 60, already routed for both pad classes;
- * stock only leaves it out of the list. FENV is engine source code 1 ("env1" in presets), which no Blackbox pad routes:
- * here it routes to the voice's filter envelope, whose source object sits in the filter object at +0x44 (value at
- * +0x48, see filter.c). Both are appended after the stock eight, so saved list positions keep their meaning.
+ * stock only leaves it out of the list. FENV and AD are engine source codes 1 and 2 ("env1", "env2" in presets), which
+ * no Blackbox pad routes: here they route to the voice's filter envelope (source object at filter object + 0x44, value
+ * at + 0x48) and AD envelope (object at + 0x40, value at + 0x44: the FENV object's unused first word), both run by
+ * filter.c. All three are appended after the stock eight, so saved list positions keep their meaning.
  *
  * A modulation route is message 0x3a: +0xc destination param (u16), +0x10 slot (0..2), +0x14 source code (u16),
  * +0x16 amount (s16, / 1000).
  */
-const char *const fenv_source_names[10] = {
+const char *const fenv_source_names[11] = {
     (const char *)0x080cea68, /* none */ (const char *)0x080cea94, /* VEL  */
     (const char *)0x080ce644, /* LFO  */ (const char *)0x080cea70, /* PTCH */
     (const char *)0x080cea78, /* MODW */ (const char *)0x080cea80, /* MVOL */
     (const char *)0x080cea88, /* MPAN */ (const char *)0x080cea90, /* CC   */
-    "KEY", "FENV",
+    "KEY", "FENV", "AD",
 };
-const uint16_t fenv_source_codes[10] = {0, 0xd, 4, 0x19, 0x1a, 0x1c, 0x1d, 0x8000, 0xe, 1};
+const uint16_t fenv_source_codes[11] = {0, 0xd, 4, 0x19, 0x1a, 0x1c, 0x1d, 0x8000, 0xe, SRC_FENV, SRC_AD};
 
-#define SRC_KEY  0xe
-#define SRC_FENV 1
-#define FENV_SRC_OFF (0x44)      /* in the filter object */
+/* Where a voice-envelope source's object sits in the filter object, or -1 for a stock source */
+static int env_src_off(unsigned src)
+{
+    return src == SRC_FENV ? FENV_SRC_OFF : src == SRC_AD ? AD_SRC_OFF : -1;
+}
 
 struct mod_msg {
     uint8_t head[0xc];
@@ -137,48 +148,53 @@ static const struct dest_map *dest_of(unsigned dest)
     return 0;
 }
 
-/* Replaces the sample-pad route call (bl @0x0805a138). FENV goes through the stock row bookkeeping as if it were KEY
-   (insert / update / at most 8), then the row is marked FENV, which the stock voice copy skips. */
+/* Replaces the sample-pad route call (bl @0x0805a138). FENV and AD go through the stock row bookkeeping as if they
+   were KEY (insert / update / at most 8), then the row is marked with the real source, which the stock voice copy
+   skips. */
 void fenv_mod_msg_a(uint8_t *pad, struct mod_msg *msg)
 {
-    if (msg->src != SRC_FENV) {
+    unsigned src = msg->src;
+    if (env_src_off(src) < 0) {
         fw_mod_msg_a(pad, msg);
         return;
     }
     msg->src = SRC_KEY;
     fw_mod_msg_a(pad, msg);
-    msg->src = SRC_FENV;
+    msg->src = (uint16_t)src;
     struct mod_row *row = ROWS(pad);
     for (unsigned i = 0, n = NROWS(pad); i < n && i < 8; i++)
         if (row[i].dest == (uint16_t)msg->dest && row[i].slot == (uint8_t)msg->slot && row[i].src == SRC_KEY)
-            row[i].src = SRC_FENV;
+            row[i].src = (uint16_t)src;
 }
 
 /* Replaces both calls of the sample-pad voice copy (bl @0x08058c34 at note start, @0x0805a8da for live voices when
-   the pad changed): stock first, then the FENV rows into the voice's parameter objects. */
+   the pad changed): stock first, then the FENV and AD rows into the voice's parameter objects. */
 void fenv_voice_copy(uint8_t *pad, uint8_t *voice)
 {
     fw_voice_copy(pad, voice);
     struct mod_row *row = ROWS(pad);
     for (unsigned i = 0, n = NROWS(pad); i < n && i < 8; i++) {
-        if (row[i].src != SRC_FENV)
+        int off = env_src_off(row[i].src);
+        if (off < 0)
             continue;
         const struct dest_map *d = dest_of(row[i].dest);
         if (d && d->a)
-            fw_mod_set(row[i].amount * (float)d->scale_a, voice + d->a, voice + 0xa8 + FENV_SRC_OFF, row[i].slot);
+            fw_mod_set(row[i].amount * (float)d->scale_a, voice + d->a, voice + 0xa8 + off, row[i].slot);
     }
 }
 
-/* Replaces the clip / slicer route call (bl @0x080685c4). Stock ignores source 1, so FENV is set on both voices here. */
+/* Replaces the clip / slicer route call (bl @0x080685c4). Stock ignores sources 1 and 2, so FENV and AD are set on
+   both voices here. */
 void fenv_mod_msg_b(uint8_t *pad, struct mod_msg *msg)
 {
     fw_mod_msg_b(pad, msg);
-    if (msg->src != SRC_FENV)
+    int off = env_src_off(msg->src);
+    if (off < 0)
         return;
     const struct dest_map *d = dest_of((uint16_t)msg->dest);
     if (!d || !d->b)
         return;
     float amount = (float)msg->amount * 0.001f * (float)d->scale_b;
     for (unsigned v = 0; v < 2; v++)
-        fw_mod_set(amount, pad + d->b + v * 0x410, pad + 0x3ac + v * 0x410 + FENV_SRC_OFF, (uint16_t)msg->slot);
+        fw_mod_set(amount, pad + d->b + v * 0x410, pad + 0x3ac + v * 0x410 + off, (uint16_t)msg->slot);
 }

@@ -399,10 +399,11 @@ struct cfg_cache {
     const uint8_t *entries;
     uint8_t count;               /* a record holds at most 72 */
     uint8_t idx[CFG_IDS];
-    uint16_t magic;
+    uint8_t magic;
+    uint8_t ad_idx;              /* where AD Attack sits (AD Decay follows it), 0 = look it up; checked on every read */
 };
 #define CFG_CACHE(obj) ((struct cfg_cache *)((obj) + 0x74))
-#define CMAGIC 0x4347u           /* "CG": bumped with the layout */
+#define CMAGIC 0x48u             /* "H": bumped with the layout */
 _Static_assert(sizeof(struct cfg_cache) == 16, "the cache must fit +0x74..+0x83");
 
 static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
@@ -444,6 +445,17 @@ static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
                 cc->count = (uint8_t)count;
                 cc->magic = CMAGIC;
             }
+            /* The AD envelope's pair: records hold Attack and Decay side by side, so one position covers both */
+            unsigned ai = cc->ad_idx;
+            if (!(e && ai && ai + 1 < count && ENTRY_ID(e, ai) == P_ADATTACK && ENTRY_ID(e, ai + 1) == P_ADDECAY)) {
+                ai = 0;
+                for (unsigned i = 1; e && i + 1 < count; i++)
+                    if (ENTRY_ID(e, i) == P_ADATTACK && ENTRY_ID(e, i + 1) == P_ADDECAY) {
+                        ai = i;
+                        break;
+                    }
+                cc->ad_idx = (uint8_t)ai;
+            }
             /* A 3.1.9-syn preset: Type HP / BP becomes Morph 100 / 50 (BP has no Morph position: 50 is the notch)
                in the record itself, once (the next preset
                save stores it that way); Type goes back to LP so nothing converts again. */
@@ -483,15 +495,18 @@ static void pad_config(const uint8_t *pad, uint8_t *obj, struct pad_cfg *c)
  * source object: the engine reads a source's value at +4 (here: level), and never its first word.
  */
 struct envstate {
-    uint32_t src_word;           /* +0x44: source object word 0, unused */
+    float ad_level;              /* +0x44: 0..1, the AD source value (its object at +0x40); FENV's object word 0,
+                                    which the engine never reads (it reads a source's value at pointer + 4) */
     float level;                 /* +0x48: 0..1, the FENV source value */
     uint8_t stage;               /* +0x4c */
     uint8_t amp_last;            /* +0x4d: amp envelope stage at the previous step */
-    uint8_t pad[2];
+    uint8_t pad[1];              /* +0x4e: BYPASSED (below) */
+    uint8_t ad_stage;            /* +0x4f: the AD envelope's stage */
     float base;                  /* +0x50: smoothed cutoff position 0..1 (knob part only) */
     float t;                     /* +0x54: seconds into the decay / release segment */
 };
 enum { ENV_IDLE, ENV_ATTACK, ENV_DECAY, ENV_SUSTAIN, ENV_RELEASE, ENV_DONE };
+enum { AD_IDLE, AD_ATTACK, AD_DECAY, AD_DONE };
 #define ENV(obj) ((struct envstate *)((obj) + 0x44))
 #define SUB      32              /* frames per envelope / cutoff step */
 #define MAX_SUBS 16
@@ -592,7 +607,113 @@ static void env_step(struct envstate *e, unsigned amp, const struct pad_cfg *c, 
     }
 }
 
+/* The AD envelope, one step of dt seconds: one-shot per note. It starts when the voice does (the stock voice start
+   zeroes +0x40..+0x5f, so a new voice is AD_IDLE at level 0) and on a fresh attack of the amp envelope without a voice
+   start (retrig: mono / legato), rises linearly over Attack, then falls exponentially, reaching 0 at the Decay time
+   (99 % of the way, where it stops). It ignores the gate: a short note still runs it to the end. */
+static void ad_step(struct envstate *e, unsigned amp, int retrig, float attack, float decay, float dt)
+{
+    if (retrig || (e->ad_stage == AD_IDLE && amp >= 1 && amp <= 4))
+        e->ad_stage = AD_ATTACK;
+    switch (e->ad_stage) {
+    case AD_ATTACK:
+        e->ad_level = attack <= dt ? 1.0f : e->ad_level + dt / attack;
+        if (e->ad_level >= 1.0f) {
+            e->ad_level = 1.0f;
+            e->ad_stage = AD_DECAY;
+        }
+        return;
+    case AD_DECAY:
+        e->ad_level = approach(e->ad_level, 0.0f, decay, dt);
+        if (e->ad_level < 0.01f) {                   /* 99 % of the way: from full, exactly at the Decay time */
+            e->ad_level = 0.0f;
+            e->ad_stage = AD_DONE;
+        }
+        return;
+    default:
+        e->ad_level = 0.0f;
+        return;
+    }
+}
+
 _Static_assert(sizeof(struct envstate) <= 0x14, "envstate must end before +0x58 (glide.c's per-voice state)");
+
+/*
+ * LFO Mode 1-Shot: the voice's LFO runs one cycle from the note start, then holds. The stock LFO (object at sample
+ * voice + 0x4e8, clip / slicer block + 0xf0) reads its oscillator at the phase (+0x10, 32 bits = one cycle), then
+ * advances it by the step (+0x14) x frames, once per block (FUN_0806f108). With Key Trig the note start sets the phase
+ * to 0, so the first wrap is the end of one cycle: there the phase goes back to 0 and the step to 0, and the LFO holds
+ * the value it started the note with. The next note start recomputes the step (FUN_0806ef50), so each note runs once.
+ * The setting is read from the voice's pad record through the filter's settings cache: right after the AD pair.
+ */
+typedef void (*lfo_fn)(uint8_t *lfo, int frames);
+#define fw_lfo_update ((lfo_fn)FN(0x0806f108))
+
+/* The voice's pad record entry k after AD Attack (0 AD Attack, 1 AD Decay, 2 LFO Mode), through the filter's settings
+   cache (filled by pad_config every block): def for a record without it (a preset from before), -1 while the cache
+   doesn't describe this record (not filled yet, or out of date: pad_config fixes it later in the block) */
+static int ad_setting(const uint8_t *obj, unsigned k, unsigned id, int def)
+{
+    const struct cfg_cache *cc = (const struct cfg_cache *)(obj + 0x74);
+    if (cc->magic != CMAGIC || !cc->entries)
+        return -1;
+    if (!cc->ad_idx)
+        return def;
+    unsigned i = cc->ad_idx + k;
+    if (i >= cc->count || ENTRY_ID(cc->entries, i) != id)
+        return -1;
+    return ENTRY_VALUE(cc->entries, i);
+}
+
+/* The AD envelope for one block, at its start: before the voice reads its modulated parameters (pitch, level, pan ...),
+   so a note's first block already has the AD's attack (Attack 0: full at once) instead of a block of 0. Same 32-frame
+   steps as the filter envelope. amp = the voice's amp envelope stage. */
+static void ad_block(uint8_t *obj, const uint8_t *amp, int n)
+{
+    struct envstate *env = ENV(obj);
+    unsigned a = *amp;
+    int retrig = a == 1 && env->amp_last > 1;            /* the amp stage the filter envelope saw last block */
+    if (n <= 0 || (!retrig && (env->ad_stage == AD_DONE || (env->ad_stage == AD_IDLE && !(a >= 1 && a <= 4))))) {
+        if (env->ad_stage == AD_DONE || env->ad_stage == AD_IDLE)
+            env->ad_level = 0.0f;                        /* at rest */
+        return;
+    }
+    int va = ad_setting(obj, 0, P_ADATTACK, DEF_ADATTACK), vd = ad_setting(obj, 1, P_ADDECAY, DEF_ADDECAY);
+    if (va < 0 || vd < 0)
+        return;                                      /* settings not known yet: start next block, not with wrong ones */
+    float attack = seg_time(va), decay = seg_time(vd);
+    for (int at = 0; at < n; at += SUB) {
+        int len = n - at < SUB ? n - at : SUB;
+        ad_step(env, a, retrig && at == 0, attack, decay, (float)len * (1.0f / FS));
+    }
+}
+
+static void lfo_update(uint8_t *lfo, int frames, uint8_t *obj, const uint8_t *amp)
+{
+    ad_block(obj, amp, frames);
+    uint32_t *phase = (uint32_t *)(lfo + 0x10), *step = (uint32_t *)(lfo + 0x14);
+    uint32_t before = *phase;
+    fw_lfo_update(lfo, frames);
+    if (*phase < before && ad_setting(obj, 2, P_LFOMODE, DEF_LFOMODE) == 1) {   /* -1 (unknown): Loop */
+        *phase = 0;                                  /* wrapped: one cycle done (a block is under one cycle: <= 102 Hz) */
+        *step = 0;
+    }
+}
+
+/* Replace the LFO update calls, the first thing each voice does per block: sample voice (bl @0x08056ff8) and
+   multisample voice (@0x0805800a), LFO at voice + 0x4e8, filter object at voice + 0xa8, amp stage at filter - 0x7c;
+   clip / slicer voice (@0x08066838), LFO at block + 0xf0, filter at block + 0x14c, amp stage at filter + 0x110 */
+void lfo_update_a(uint8_t *lfo, int frames)
+{
+    uint8_t *obj = lfo - 0x4e8 + 0xa8;
+    lfo_update(lfo, frames, obj, obj - 0x7c);
+}
+
+void lfo_update_b(uint8_t *lfo, int frames)
+{
+    uint8_t *obj = lfo - 0xf0 + 0x14c;
+    lfo_update(lfo, frames, obj, obj + 0x110);
+}
 
 void glide_advance(uint8_t *filter_obj, int frames);
 
@@ -697,11 +818,14 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
     float knob = params ? fw_param(params + 8) : 1.0f;
     float pos = (knob + 1.0f) * 0.5f;                       /* cutoff position 0..1 on the stock curve */
     pos = pos < 0.0f ? 0.0f : pos > 1.0f ? 1.0f : pos;
-    /* Morph: the knob plus its routes; FENV routes move with the envelope, the rest once per block */
-    float morph = cfg.morph, morph_env = 0.0f;
+    /* Morph: the knob plus its routes; FENV routes move with the envelope per step and AD with the block (advanced at
+       its start, see ad_block), both after the knob's smoothing; the rest once per block, smoothed with the knob */
+    float morph = cfg.morph, morph_env = 0.0f, morph_ad = 0.0f;
     for (unsigned i = 0; i < cfg.routes; i++) {
-        if (cfg.source[i] == 1)
+        if (cfg.source[i] == SRC_FENV)
             morph_env += cfg.amount[i];
+        else if (cfg.source[i] == SRC_AD)
+            morph_ad += cfg.amount[i] * env->ad_level;
         else
             morph += cfg.amount[i] * source_value(cfg.source[i], obj, pad, amp);
     }
@@ -772,7 +896,7 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
             env->base = pos;                                 /* a new note starts where the knobs are */
             MORPH_BASE(obj) = morph;
         }
-        float m0 = MORPH_BASE(obj) + morph_env * (subs ? levels[0] : 0.0f);
+        float m0 = MORPH_BASE(obj) + morph_ad + morph_env * (subs ? levels[0] : 0.0f);
         morph_weights(m0 < 0.0f ? 0.0f : m0 > 1.0f ? 1.0f : m0, WPREV(obj));
         for (int k = 0; k < 2; k++)
             st->s1[k][0] = st->s1[k][1] = st->s2[k][0] = st->s2[k][1] = 0.0f;
@@ -787,7 +911,7 @@ void filter_process(uint8_t *obj, void *buf, const uint8_t *pad, const uint8_t *
         int at = k * sub, len = k == subs - 1 ? n - at : sub;
         env->base += glide * (pos - env->base);
         MORPH_BASE(obj) += glide * (morph - MORPH_BASE(obj));
-        float m = MORPH_BASE(obj) + morph_env * levels[k];
+        float m = MORPH_BASE(obj) + morph_ad + morph_env * levels[k];
         float w[2], w0[2] = {WPREV(obj)[0], WPREV(obj)[1]};
         morph_weights(m < 0.0f ? 0.0f : m > 1.0f ? 1.0f : m, w);
         WPREV(obj)[0] = w[0];
