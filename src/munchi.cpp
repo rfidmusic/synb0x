@@ -129,6 +129,7 @@ struct Munchi {
     long pulses;
     int last_wand, last_random, last_feedback, last_freeze, last_duck;
     float clock_mul;
+    int rev_idle;                   /* blocks the reverb has been silent and skipped (its memory cleared over 16) */
     float wl[MAXN], wr[MAXN];
 };
 
@@ -310,7 +311,7 @@ static void run_clock(Munchi *m, float bpm, int frames)
     }
 }
 
-static inline void process48(Munchi *m, float xl, float xr, float *ol, float *orr)
+static inline void process48(Munchi *m, float xl, float xr, float *ol, float *orr, bool rev_on)
 {
     fonepole(m->wet_amt, 1.f, .001f);
     fonepole(m->reverb_amt, m->reverb_amt_target, .001f);
@@ -320,13 +321,10 @@ static inline void process48(Munchi *m, float xl, float xr, float *ol, float *or
     float yl = 0.f, yr = 0.f;
     m->delay.write(wl, wr);
     m->delay.read(&yl, &yr);
-    m->reverb.SetAmount(m->reverb_amt * m->reverb_amt * .8f);
-    m->reverb.SetTime(m->reverb_amt);
-    m->reverb.SetLowpass(m->reverb_amt * .55f + .4f);
-    m->reverb.SetDiffusion(m->reverb_amt * .6f);
     yl += wl * m->reverb_boost;
     yr += wr * m->reverb_boost;
-    m->reverb.Process(&yl, &yr);
+    if (rev_on)
+        m->reverb.Process(&yl, &yr);
     m->comp.Process(&yl, &yr, &dl, &dr);
     *ol = yl;
     *orr = yr;
@@ -371,8 +369,20 @@ int munchi_process(uint8_t *obj, uint32_t *bufs)
 
     controls(m, store);
     run_clock(m, *(float *)((uint8_t *)bufs[0] + 0x18), n);
+    /* the reverb's settings follow its (slowly gliding) amount once per block, not every sample; with Wand at or left
+       of centre its amount is 0 and it is skipped (it was 40 % of Munchi's time), its memory emptied over the next 16
+       blocks so a later reverb starts clean instead of replaying a stale tail */
+    m->reverb.SetAmount(m->reverb_amt * m->reverb_amt * .8f);
+    m->reverb.SetTime(m->reverb_amt);
+    m->reverb.SetLowpass(m->reverb_amt * .55f + .4f);
+    m->reverb.SetDiffusion(m->reverb_amt * .6f);
+    bool rev_on = m->reverb_amt_target > 0.f || m->reverb_amt > 1e-4f;
+    if (rev_on)
+        m->rev_idle = 0;
+    else if (m->rev_idle < 16)
+        m->reverb.ClearPart(m->rev_idle++);
     for (int i = 0; i < n; i++)
-        process48(m, il[i], ir[i], &m->wl[i], &m->wr[i]);
+        process48(m, il[i], ir[i], &m->wl[i], &m->wr[i], rev_on);
 
     float *ol = nullptr, *orr = nullptr;
     fw_ptrs(bus, &ol, &orr);

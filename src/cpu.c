@@ -28,7 +28,7 @@ typedef void (*label_fn)(uint8_t *label, const char *s);
 
 /* The firmware version the screens show. patches/cave.py points the four stock references to the stock "3.1.9" (literal
    pool words @0x0809af30, 0x080aeaf4, 0x080c55e8, 0x080c72c8) here, so the name is not limited by the stock slot. */
-const char mod_version[] = "3.1.t";
+const char mod_version[] = "S.1";   /* TEST BUILD S.1: 3.1.v7 + two bit-identical CPU savings in the stock grain renderer FUN_08057db8 (grainmix_thunk.S, patches/grainfast.py); 3.1.v7: Mod tab (LFO Depth fixed 100 %, no 1-Shot, AD slopes), long-sample cache index, granular linear unless HighQ, grain window in ITCM, copy by cache lines, Saturation / delay-reader loops, 2-pole SEM, 480 MHz on rev V (clock.c); the meter reads S.1, or S.1s at the stock clock */
 #define VERSION     mod_version
 #define TEXT_CHARS  0x31                             /* text object: characters */
 #define LABEL_TEXT  0x34                             /* label -> its text object */
@@ -108,13 +108,25 @@ static char *put_uint(char *p, unsigned v)
    (16 of version, " 100/100%", NUL); every destination has room: report()'s buffer 32, text objects 31 characters,
    the global cell's name 64. */
 /* With numbers a version containing '-' is shortened to what follows it, so the text stays within the 12 characters of
-   the original mod's "3.1.n 34/71%" that fit where the screens show the version. "3.1.s" has none: "3.1.s 34/71%". */
+   the original mod's "3.1.n 34/71%" that fit where the screens show the version. "3.1.s" has none: "3.1.s 34/71%". A
+   name longer than five characters loses its "3.1.": "3.1.td" -> "td 34/71%". */
+int clock_480(void);
+
 static const char *short_version(void)
 {
+    return clock_480() ? "S.1" : "S.1s";            /* (S.1 at 480 MHz, S.1s at the stock 399 MHz) */
     const char *v = VERSION;
     for (const char *c = VERSION; *c; c++)
         if (*c == '-')
             v = c + 1;
+    /* a test build's longer name ("3.1.td") made "3.1.td 8/17%" 13 characters: the Tools screen cut off its end.
+       Longer than the release's five, it drops "3.1.": "td 8/17%" (the full name still shows before the first
+       reading). */
+    int n = 0;
+    while (v[n])
+        n++;
+    if (n > 5 && v[0] == '3' && v[1] == '.' && v[2] == '1' && v[3] == '.')
+        v += 4;
     return v;
 }
 
@@ -157,6 +169,9 @@ static uint8_t *ours(int i)
     const char *c = (const char *)(t + TEXT_CHARS), *sv = short_version();
     if (c[0] == '3' && c[1] == '.' && c[2] == '1' && c[3] == '.')        /* full version */
         return t;
+    for (int k = 0; VERSION[k] == c[k]; k++)                              /* (S.1: a name without "3.1.") */
+        if (VERSION[k] == 0)
+            return t;
     for (int k = 0; sv[k] == c[k]; k++)                                   /* or the short one */
         if (sv[k + 1] == 0)
             return t;

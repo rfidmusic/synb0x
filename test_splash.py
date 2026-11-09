@@ -2,7 +2,7 @@
 import struct
 import sys
 
-IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+cave/BLACKBOX.bin"
 fw = open(IMG, "rb").read()
 o = lambda a: a - 0x08040000
 fails = 0

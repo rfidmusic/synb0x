@@ -1,0 +1,446 @@
+SYNB0X FIRMWARE CHANGELOG
+=========================
+
+Synb0x is an unofficial mod for the original 1010music Blackbox (not the Blackbox 2), applied as a
+patch to the stock 3.1.9 firmware. It is a fork of blackbox-mod by Justin Joe (j3threejay), build
+3.1.n. Newest versions first. Dates are commit dates (US Pacific time).
+
+Every Synb0x build is made from the same stock file:
+  Stock BLACKBOX.bin 3.1.9 SHA-256:
+  281ae303d32e5eb52adca7817a648a34e4bd3848017f26673dd9df3905f1341d
+
+Version names: 3.1.s, 3.1.t and S.1 are the releases. A third letter marks a test build of that line
+(3.1.sr, 3.1.tr = Res remap; 3.1.ta / tb / tc / sc = AD envelope; 3.1.ua / ub / u0 / u1 = the "u"
+line's filter in five versions: SEM, ladder (removed), stock 2-pole, stock 4-pole (removed),
+Polivoks (up)).
+Test builds were made for hardware testing and are not published.
+
+
+== S.1 - release ==
+
+Date:    2026-11-09
+Status:  Published (GitHub main, tag S.1)
+SHA-256: 5c2b24860fba306be715c03a7145c8d5b87f4d7500d3a32318cfad3bb5b037a0
+Base:    3.1.v7 (test build: the 3.1.v line, after 3.1.u / 3.1.up)
+Patch:   solo slice filter fenv filttab glide splash cpu od clock delay grain cache grainfast cave
+Changes compared with the 3.1.t release:
+- Filter Type per pad (Conf tab): SEM (12 dB/oct 2-pole SVF, as the Oberheim SEM) or Polivoks
+  (12 dB/oct, slew-limited rail-clipping integrators, 2x oversampled); Morph LP -> notch -> HP on
+  both. Res below noon runs from a flat Q 0.707 up to the stock noon value. The filter runs before
+  the pad's Level, Pan and amp envelope on every pad type.
+- Mod tab: Waveform / Trig, Rate / Beat, AD Atk / AD Decay, Atk Slope / Dec Slope. LFO Depth fixed
+  at 100 % (the knob is gone; route amounts set the depth); LFO 1-Shot removed (the AD envelope does
+  that job). Atk Slope / Dec Slope curve the AD stages without changing their times.
+- Oscillator (Osc tab, Sample and Multisample pads): modulation source OSC for Filter and Level;
+  Wave, Level, Octave, Tune / Fine, Pulse W, Osc and Osc Track buttons (Osc Track moved here from
+  the Conf tab, now an on / off button). Pulse W, Level and Tune are modulation destinations.
+- 480 MHz on revision V chips (479.23 MHz; stock clock on others); meter S.1 / S.1s.
+- Long samples: an exact sample-cache index past 256 s.
+- Granular: Fidelity picks the grain interpolation (HighQ cubic, else linear); grain window in ITCM;
+  no full clear of the grain source buffer every block; the grain mix loop without a division per
+  sample (the last two new in S.1, bit-identical to stock).
+- Shared stereo readers, grain resampler and filter loops; copy loop by cache lines with preload;
+  Saturation and delay-reader loops: all bit-identical where stock had them.
+- Removed: Munchi delay, Room reverb, master compressor models (stock Delay, Reverb, Compressor).
+- Preset format spec: docs/PRESET_FORMAT.md and docs/Blackbox_preset_format.csv.
+Known: SEM self-oscillation builds slowly on low notes; AD starts late on granular pads.
+Test builds 3.1.v1 .. 3.1.v7 (2026-10-15 .. 10-17) led here; they were not published.
+
+== 3.1.up - Polivoks filter ==
+
+Date:    2026-10-14
+Status:  Test build, not published (branch polivoks-up, commit 2ca3f68)
+Base:    3.1.u0 (3.1.ua's features; only the filter core differs)
+Changes:
+- The filter is modelled on the Formanta Polivoks (1982): a 2-pole (12 dB/oct) state-variable
+  filter whose integrators are K140UD12 programmable op-amps used as slew generators, with no
+  capacitors. Loud signals make the integrators ramp at a fixed rate instead of curving, and the
+  outputs clip at the op-amp rails, which gives the aggressive, easily overloaded sound.
+- The model runs twice per sample (as in Vult's oversampled filter examples, MIT) so the clipping
+  aliases less; small signals stay in tune; cutoff up to 16 kHz.
+- Self-oscillation from about 92 % Res is left free, as on the original: it grows to the rails,
+  rough (not a sine), and sits about 5.6 semitones below the cutoff at every pitch, so it still
+  follows KEY, transposed. Morph LP -> notch -> HP as before (the original has LP and BP).
+- CPU: about 12,000 cycles more per voice than 3.1.ua in the stress test below (filter mean
+  42,403 vs 30,367 cycles per stereo voice per block, with Fidelity, envelopes and Morph routes).
+SHA-256: b099d20e495f3fcd57c157cbddcb0a01bb0dc0158357ec61be1f4cd95c4c048f
+
+
+== CPU stress test (stress_cpu.py, emulator) ==
+
+Every voice random (Fidelity incl. machine modes, Res up to self-oscillation, Morph, filter
+envelope, AD, LFO Mode, pitch, Morph routes from every source except MIDI CC), every pad with
+Saturation, master compressor + Room reverb + Munchi granular delay, voices added until one audio
+block's budget is used. Real code for all of that, including the stock bus mix; the stock route
+evaluation and voice bookkeeping are estimated (about 1,000 cycles per voice). The stock mixer,
+sequencer and screen task are not included, so these are upper bounds: the on-screen CPU meter
+shows the real load.
+
+                                   3.1.tc    3.1.ua    3.1.up
+  Voice, mean (cycles per block)   61,905    62,677    74,713
+  Voice, worst                     99,333   101,912   110,745
+  Master FX (comp + Room + Munchi) 501,439  501,439   501,439
+  Voices until 100 %, 480 MHz          31        30        25
+  Voices until 100 %, 400 MHz          23        23        20
+  Voices at 80 % load, 480 MHz         23        23        19
+
+The engine itself allows 16 voices per pad (Poly X) on 16 pads: 256 voice slots. CPU is the limit.
+
+With a granular voice per pad (3.1.up), on the stock granular engine itself: a granular pad plays
+through the sample voice FUN_08057fe0, whose 8 grain objects are each rendered by the stock grain
+renderer at 0x08057db8 and respawned by FUN_08057ab0 (rand() for Scatter / Pan Rnd), run here in
+the emulator (stock cubic resampling, the window table at 0x080d26ac, constant-power pan). Only
+the sample-cache read is stood in for, by the stock float copy with each fetch's exact length.
+Random grain size (30-200 ms), scatter, pan, pitch (rate 1.0 skips resampling) and Speed.
+
+  Granular voice (cycles per block)  mean       worst      of which grains + fetch (mean)
+  Grain Count 8                      175,972    403,566    108,089 + 19,693
+  Grain Count 4                      124,675    219,002     65,395 + 11,090
+  Grain Count 2                       91,268    133,785     37,018 +  6,060
+
+One 8-grain granular voice averages 6.9 % of a 480 MHz core and can reach 16 % (short grains at
+high pitch respawn several times per block). A granular voice (Grain Count 8) on all 16 pads
+needs about 3.5 M cycles per block: over budget (2.56 M at 480 MHz) before any other voice plays.
+What fits (granular pads + random voices on top, every pad with Saturation, master FX on):
+
+                       480 MHz                     400 MHz
+  Grain Count 8        10 + 2                      8 + 1
+  Grain Count 4        15 + 0                      11 + 1
+  Grain Count 2        16 (all) + 5                15 + 1
+
+
+== CPU comparison of the "u" filters ==
+
+Instructions per stereo voice per 256-frame audio block, counted in the emulator (Unicorn), steady
+state, Filter at about 320 Hz. Compare builds with each other, not with device cycles.
+
+                               Stock    3.1.tc   3.1.ua   3.1.ub   3.1.u0   3.1.u1
+                               3.1.9    (SVF)    (SEM)    (ladder) (stock   (stock
+                                                                    2-pole)  4-pole)
+  Res 50 % (default), LP        6,325   13,751   13,982   16,941    9,743   14,102
+  Res 50 %, Morph 50 %          6,325   15,906   16,145   19,496    9,762   14,141
+  Res 90 % (driven), LP         6,325   21,575   22,011   21,641   14,732   19,080
+  Res 100 % (self-osc), LP      6,325   21,575   22,011   21,613   14,732   19,080
+  Res 100 %, Morph 50 %         6,325   23,218   24,215   25,089   14,760   19,110
+
+  Code cave used (of 32,768)   -        31,472   32,176   32,392   31,224   31,704
+
+Stock 3.1.9's filter is a single 12 dB biquad without Res drive, Morph, envelope or modulation,
+and the same cost at every setting.
+
+
+== 3.1.u1 - The stock filter as a 4-pole, self-oscillating - REMOVED ==
+
+Date:    2026-10-13
+Status:  Removed 2026-10-14: the same filter as 3.1.ua for fixed settings, and the SEM (3.1.ua)
+         sounds better. The firmware file and the stock-u1 branch were deleted. History only.
+Base:    3.1.u0 (3.1.ua's features)
+Changes:
+- Two of the stock filter's biquads in series (24 dB/oct): the first fixed, the second carrying
+  Res. Res 0 is a flat 4-pole (no peak), noon the stock setting.
+- Mathematically the same filter as 3.1.ua for any fixed setting: in the emulator their responses
+  match to 0.1 dB, except the resonant peak at Res 80 % (+0.6 dB, because 3.1.u1 has no soft
+  limiter inside the resonance). Differences are in how it behaves when driven: the resonance does
+  not growl; drive is the input clip only (a saturator inside a biquad detunes it at low notes).
+- Self-oscillates like 3.1.ua: within 0.54 cents, 0.5 level in every Morph position, strongest
+  harmonic -88 dB.
+- CPU: about the same as 3.1.ua at default Res, 13-21 % less with Res past noon.
+SHA-256: 57ac61ee32b8e9b9a6f6bedeff57c050c84f496e24a2e50e6e029460bf0e0294
+
+
+== 3.1.u0 - The stock filter (2-pole), self-oscillating ==
+
+Date:    2026-10-13
+Status:  Test build, not published (branch stock-u0, commit 3cf2ab2)
+Base:    3.1.ua (everything else the same; only the filter core differs)
+Changes:
+- The filter is the stock 3.1.9 filter's design, one 12 dB/oct biquad, with all of the Synb0x
+  controls around it: Filter as cutoff, Res, Morph LP -> notch -> HP, filter envelope, FENV / AD /
+  KEY and other modulation, glide, drive past noon, click-free bypass.
+- Res 0 is a flat 2-pole (Q 0.707, no peak); noon and above follow the stock Res curve, then the
+  filter self-oscillates from about 93 % into a clean sine at the cutoff (within 0.57 cents, level
+  0.5 in every Morph position, strongest harmonic -88 dB), playable from KEY like 3.1.ua.
+- Gentler than the 4-pole filters: 12 dB/oct, and the notch's sides are 6 dB down (12 dB on the
+  4-pole SEM).
+- Lightest of the "u" filters on CPU: 9,743 at default Res (3.1.ua 13,982).
+SHA-256: be66739a944ffaa2f8c6bdf9ddc2efef79f7a7160263fe58a3ac03f2a40c7826
+
+
+== 3.1.ub - Self-oscillating 4-pole ladder (to compare with 3.1.ua) - REMOVED ==
+
+Date:    2026-10-13
+Status:  Removed 2026-10-14 for its CPU cost (about 21 % more than 3.1.ua at default Res): the
+         firmware file and the ladder-ub branch were deleted. Kept here as history only.
+Base:    3.1.ua (everything else the same; only the filter core differs)
+Changes:
+- The filter is a 4-pole ladder instead of the SEM-style pair of state-variable filters: four
+  one-pole stages with resonance fed back around all four (the Moog idea), modelled without the
+  usual one-sample delay so it stays in tune. Structure after the Faust libraries' moogLadder
+  (MIT-style licence, credited in THIRD_PARTY.md).
+- Res sets the feedback so each Res position gives the same resonant peak as 3.1.ua; from about
+  94 % it self-oscillates into a clean sine at the cutoff, held steady by the same kind of level
+  control as 3.1.ua (strongest harmonic -108 dB at full Res, -118 dB at 95 %; within 0.61 cents
+  from 55 Hz to 10 kHz). KEY -> Filter at +100 % plays it in tune.
+- LP keeps its bass as Res rises (passband compensated), so LP fully open still sounds like the dry
+  sound and the click-free bypass works.
+- Morph mixes the ladder's four stage outputs (the Oberheim Xpander way): LP 24 dB at 0 %, a deep
+  notch at 50 %, HP 24 dB at 100 %, blended in between. Compared with 3.1.ua: the notch keeps the
+  full level on both sides (3.1.ua's is about 12 dB down everywhere), in-between Morph settings let
+  more highs through, HP resonates less than LP (as on a ladder), and the self-oscillating sine has
+  the same level in every Morph position.
+- Sound: softer knee at low Res, broader resonance, a slight bass bump around Res 50 % in LP.
+- CPU (instructions per stereo voice per 256-frame block): 16,941 at default Res (3.1.ua 13,982,
+  +21 %); 21,641 with Res past noon (3.1.ua 22,011, -2 %); 25,089 at full Res with Morph 50 %
+  (3.1.ua 24,215). Stock 3.1.9: 6,325.
+SHA-256: 09edd37f8127bed20f461b22a08ae21a40189d374dce3c8dc041ca0a57fa621c
+
+
+== 3.1.ua - Self-oscillating SEM filter ==
+
+Date:    2026-10-13
+Status:  Test build, not published (branch ladder-u, commit 037c97e)
+Base:    3.1.tc (so it also has the Res remap, the AD envelope and the 1-Shot button)
+Changes:
+- The filter can now self-oscillate. It is still the same 4-pole SEM-style filter with Morph
+  (LP -> notch -> HP); only the top of the Res knob changes.
+- From about 85 % Res the filter starts to ring, and from about 93 % up it sings on its own: a clean
+  sine at the cutoff frequency, held at a steady level (about half of full scale) by a built-in
+  level control, so it does not run away or blow up.
+- It works in every Morph position: between LP and HP the notch no longer cancels the sine.
+- The sine tracks the Filter knob: in the emulator it was within 0.61 cents of the cutoff from 55 Hz
+  to 10 kHz. With KEY -> Filter at +100 % it plays in tune, one octave per octave, so the filter can
+  be played as an oscillator from the keys.
+- High Res drive is softened as oscillation takes over, so the sine stays pure (strongest harmonic
+  -108 dB at full Res, -74 dB at 95 %).
+- No clicks when sweeping Morph or pulling Res back down (emulator checks).
+- CPU: about the same as 3.1.tc (13,982 vs 13,751 instructions per stereo voice per block at
+  default Res).
+- Known limits (from development notes): low notes take up to about 0.4 s to build up from silence
+  (faster with input signal); the oscillation stops when the voice is flagged silent, for example
+  when a one-shot sample has ended.
+SHA-256: 34136c19ddcd82d1485d9f7c9e746ca10024eb97a753617afe14317544d3f17d
+
+
+== 3.1.tc - AD envelope, 1-Shot as a button (3.1.t line) ==
+
+Date:    2026-10-12
+Status:  Test build, not published (branch ad-t, commit 2bfb0c3)
+Base:    3.1.tb
+Changes:
+- The LFO's 1-Shot setting on the Mod tab is now an on/off button labelled "1-Shot", like the stock
+  Key Trig and Beat Sync buttons, instead of a Loop / 1-Shot value.
+- Same stored values as 3.1.tb, so presets saved on 3.1.tb keep the setting.
+SHA-256: d4159fbb74b1442579c37b4f46f52fb5fdaf8d6ebf3d55b42863460be332e619
+
+
+== 3.1.sc - AD envelope, 1-Shot button (3.1.s line) ==
+
+Date:    2026-10-12
+Status:  Test build, not published (branch ad-s, commit bb5f8d7)
+Base:    3.1.sr (3.1.s + Res remap), plus the 3.1.tc changes ported over
+Changes:
+- The 3.1.tc features for the 3.1.s line (filter Type instead of Morph): AD envelope modulation
+  source, LFO tab renamed Mod, 1-Shot button, AD Attack / AD Decay knobs. See 3.1.ta - 3.1.tc.
+- 3.1.s has no Morph, so the "AD -> Morph" routing does not apply.
+SHA-256: 6f652400210352897f36b699e4556207c4e4a77efc4a092900c9153d08a16cea
+         (from the local test file; not cross-checked against a commit message)
+
+
+== 3.1.tb - AD envelope fix, LFO 1-Shot (3.1.t line) ==
+
+Date:    2026-10-12
+Status:  Test build, not published (branch ad-t, commit b9886c9)
+Base:    3.1.ta
+Changes:
+- AD now starts on the note's very first audio block, so Pitch, Level and Pan see it at once. With
+  Attack at 0 the envelope is at full right away and goes straight into Decay (in 3.1.ta it was one
+  block late, heard as a small delay).
+- AD routed to Morph now follows the knob's smoothing, like FENV.
+- New LFO Mode: Loop or 1-Shot. In 1-Shot the LFO runs one cycle and then stops at the cycle start;
+  with Key Trig each note restarts it from the beginning.
+- Mod tab bottom row: Key Trig, LFO Mode, AD Attack, AD Decay.
+- Development notes record that AD still starts late on granular pads (grain scheduling); not fixed.
+SHA-256: 6fc5b8ef6e5205db7bbcd91723d873b0a702c9837e4718dbca039c22a86dad9e
+
+
+== 3.1.ta - AD envelope modulation source (3.1.t line) ==
+
+Date:    2026-10-12
+Status:  Test build, not published (branch ad-t, commit 8ec70ba)
+Base:    3.1.tr (3.1.t + Res remap)
+Changes:
+- New modulation source AD: a simple one-shot attack / decay envelope per voice. It can be routed
+  to every destination, like FENV, including Morph. It is saved in presets as "env2".
+- New knobs AD Attack and AD Decay (0 to 60 s on a curve; defaults 0 and 300), on the Mod tab after
+  Key Trig.
+- The LFO tab is renamed Mod. The Source list now has 11 entries.
+SHA-256: d1f5ed89d11c777a4d3df0440f006f69a029690c880886d12abc90aad39f7dbf
+         (from the local test file; not cross-checked against a commit message)
+
+
+== 3.1.tr / 3.1.sr - Res remap test builds ==
+
+Date:    2026-10-12
+Status:  Test builds, not published (branches res-t, commit 071fc2e; res-s, commit 01b47d5)
+Base:    3.1.t (3.1.tr) and 3.1.s (3.1.sr), the final releases
+Changes:
+- Res below noon keeps the filter a true 24 dB/oct. In earlier builds turning Res down below noon
+  went to a very low resonance value inherited from the stock 12 dB filter, which made the passband
+  sag and softened the slope to about 18 dB/oct. Below noon Res now runs from a flat, no-peak
+  setting up to the stock noon value on a smooth curve. Noon and above are unchanged.
+- CPU unchanged.
+SHA-256: 3.1.tr 4f28e4ec4c223e1cc9c7c16efcca5f428da17759ea286fdf0228b755dd8a2f62
+         3.1.sr 68147202004b98af3fc122fa0c6537b254bfa6baff2588cdb9d1d700b0b8c43f
+
+
+== 3.1.t / 3.1.s with Res remap - published, then reverted ==
+
+Date:    2026-10-12
+Status:  Reverted. Published as updates of 3.1.t and 3.1.s and withdrawn the same day because it
+         needed more testing; 3.1.t and 3.1.s went back to the builds listed below (226b86a1... and
+         2fbff556...). Kept locally on branches res-remap-t (d5df746) and res-remap-s (4d19136).
+Base:    3.1.t final and 3.1.s final
+Changes:
+- The Res remap from 3.1.tr / 3.1.sr (Res below noon keeps the filter 24 dB/oct).
+SHA-256: 3.1.t with Res remap 27dae540991fc130ebc01298187a25f600b861e1aa714138e544cd1598cf698f
+         3.1.s with Res remap 032865cbad0cc1dd4da993e19575a30535558f80982c0c3a08e773ef7158d50e
+
+
+== 3.1.t - Filter Morph (current release) ==
+
+Date:    2026-10-11 (first published and updated in place several times the same day)
+Status:  Release, updated in place (tag 3.1.t, branch morph, commit c67a2d6)
+Base:    3.1.s (all of its features, with Type replaced by Morph)
+Changes in the first 3.1.t release:
+- Filter Morph replaces the Type control. On the Filt tab, the Morph knob moves the 24 dB/oct
+  filter continuously from LP (0 %) through a notch (50 %) to HP (100 %). Band-pass is no longer
+  available.
+- Morph is a modulation destination: LFO, VEL, KEY, FENV and the MIDI sources (pitch bend, mod
+  wheel, volume, pan) move it per voice.
+- Older presets: a pad saved on 3.1.s / 3.1.9-syn with Type HP becomes Morph 100 %; Type BP becomes
+  Morph 50 % (the notch), so re-set those pads. This happens the first time the pad plays; save the
+  preset to keep it.
+Updates published in place the same day:
+- Click fixes: turning Filter to fully open and back mid-note clicked loudly, and moving Morph (by
+  hand or by LFO) made small zipper clicks. The filter now switches off only once its cutoff has
+  glided all the way, fades back in when it restarts, and ramps the Morph mix smoothly.
+- Less CPU: the soft clipping in the filter's Res drive and in Saturation was made cheaper (filter
+  at high Res about 21 % less, Saturation about 14 % less), same sound.
+- Morph reworked as a plain crossfade, like the Oberheim SEM's mode knob: the first version mixed
+  LP and HP at full level, so most of the knob sounded nearly unfiltered apart from a narrow notch.
+  Now the sound tilts steadily across the whole knob and is about 12 dB quieter at the notch. Chosen
+  on hardware over an equal-power version (test build 3.1.t1).
+- The CPU meter now actually shows on the device, next to the version ("3.1.t avg/peak%").
+- New companion apps (no firmware inside): Synb0x Firmware Patcher (Windows / macOS; patch a stock
+  3.1.9 file to 3.1.t or 3.1.s) and Synb0x Preset Converter (rewrites pre-Synb0x presets so filtered
+  pads sound as they did; also convert_presets.py on the command line).
+SHA-256 (final): 226b86a1fc32f85f4d606cdd7720c9919f249c0b732659ce6d4ab87aa7a7864b
+Earlier 3.1.t SHA-256s, oldest first:
+  3f3b9c63f6ee6f4662917b4a42c39b5e4f8a4feb9173f38a1ce610b294ceb0ed  first release
+  c2908f0817b4f133d7a4bd9e16ba8347bf49cb81ff03d9386170c5d163aeab87  click fixes
+  2965f0a17fd52a8a0681f59c8ac22df19c72f178cdcaa4641e52ba3ee5116f1a  less CPU (clipping)
+  42bc7be548678e9599c6c8db261bc9e72c9935e18042bbf20c52396cd6af3166  Morph as plain crossfade
+                                                                    (intermediate; not in the
+                                                                    published release notes)
+  226b86a1fc32f85f4d606cdd7720c9919f249c0b732659ce6d4ab87aa7a7864b  CPU meter shows (final)
+
+
+== 3.1.9-syn.1 - Filter Morph, first attempt ==
+
+Date:    2026-10-11
+Status:  Not published as far as the repository shows (kept only in a stash); superseded by 3.1.t
+Base:    3.1.9-syn
+Changes:
+- First version of Filter Morph: LP at 0 %, band-pass at 50 %, HP at 100 %, with equal-power blends
+  in between, modulatable. Replaced by 3.1.t's LP -> notch -> HP Morph.
+SHA-256: e91c320cb240bfdb2f16ecac6df98fb30a915772b400591d46db1b602897388b (commit message)
+
+
+== 3.1.s - Filter Type, filter envelope, Filt tab, glide (first published as 3.1.9-syn) ==
+
+Date:    2026-10-11
+Status:  Release, updated in place (tag 3.1.s, branch release/3.1.s = local syn-meter, commit
+         e1084a4). Now the previous release; 3.1.t is current.
+Base:    3.1.9-syn (same features, renamed)
+Changes:
+- Renamed from 3.1.9-syn to 3.1.s so the version plus CPU meter fits on screen, e.g.
+  "3.1.s 34/71%". Features as 3.1.9-syn.
+Updates published in place the same day:
+- Fixed: the Filt tab's Release knob did not keep its value (it snapped back to 30 at the next note)
+  and secretly flipped a hidden Keys-screen switch when turned. Moved to a free parameter.
+- Fixed: the CPU meter skipped the version labels (they live in SDRAM).
+- No click when turning Filter to fully open (or fully closed for HP) and back mid-note (backport
+  of the 3.1.t click fix).
+- Less CPU: cheaper soft clipping in the filter's Res drive and in Saturation (backport from 3.1.t),
+  same sound.
+- The CPU meter now actually shows on the device.
+- Same companion apps as 3.1.t (Firmware Patcher, Preset Converter).
+SHA-256 (final): 2fbff5563ef236dfb2b84b04ba462f4da38a6bb9e2a2f50329cd6fdf7cc4c4de
+Earlier 3.1.s / 3.1.9-syn SHA-256s, oldest first:
+  de613438eafd9c866e06331c770c139ca208c66d621c1b0f57ad6c0350051c79  3.1.9-syn first release
+  6c7d461fe3042d18a412e3013747c2642ef824db896768daa8fee60b196d5d45  3.1.9-syn, CPU meter fits
+  417aebb41fbd416c0216264a447a2d9a7c1d221a7128668848556e164653e807  renamed 3.1.s
+  9722033fbc623676c4df243711e66d217045fc3faff3430e4e9bdc9cb80cad1b  Release knob + meter fixes
+  a578ef3100749174e8f60250005638b929abdfc416378b00a9b6f455f63a4f9d  no click at filter stop/start
+  0305408ed409889d5eb8f736131c6c4e2f607d99aaf79336140656eed1218bb3  less CPU (clipping)
+  2fbff5563ef236dfb2b84b04ba462f4da38a6bb9e2a2f50329cd6fdf7cc4c4de  CPU meter shows (final)
+
+
+== 3.1.9-syn - First Synb0x release ==
+
+Date:    2026-10-11
+Status:  Release, updated in place once; renamed 3.1.s the same day (tag 3.1.9-syn, commit ac96fb6)
+Base:    blackbox-mod 3.1.n
+Changes compared with blackbox-mod 3.1.n:
+- Removed, to make room for the filter section: the Pad-1 ducker (EXP1 / EXP2 / PUMP / LINR
+  sources), chords on the Keys screen, note conditions (1:2 ... 8:8) and the sequencer fix.
+- Filter knob is now cutoff across its whole travel (far left 20 Hz, far right 20.5 kHz), shown as
+  0-100 %. New pads start fully open.
+- New Type control: LP, HP or BP (24 dB/oct state-variable filter, Res drive past noon as before).
+- New per-pad, per-voice filter envelope: Attack, Decay, Sustain, Release (0 ms to 60 s) and Depth
+  (-100..+100). It starts with the note and releases with the amp envelope.
+- New Filt tab on the pad screen, right after Main: Filter, Res, Type, Depth / Attack, Decay,
+  Sustain, Release, with modulation indicators. Main tab now reads Level, Pitch, Pan, Saturation /
+  amp Attack, Decay, Sustain, Release.
+- New modulation sources in every pad's Source list: KEY (key follow) and FENV (the filter envelope,
+  which can also drive Pitch, Level, Pan and the rest).
+- Glide on sample and multisample pads (Conf tab, after Poly Mode): Glide Off / Always / Legato and
+  Glide Time (up to 10 s; same time whatever the interval).
+- Startup screen reads Synb0x.
+- Less CPU per voice than the 3.1.n filter.
+- Fixed: on clip / slicer pads the second voice read another pad's Fidelity setting.
+- Pad settings capacity raised from 64 to 72 entries to hold the new settings.
+- Browser patcher dropped: Python apply.py only.
+- Presets: they load; older presets get the defaults for the new settings. A pad saved with Filter
+  at centre (stock: off) now loads as a low-pass at about 640 Hz.
+Update published in place:
+- The CPU meter text was too long to fit next to the version; it now shows "syn 34/71%".
+SHA-256: first release de613438eafd9c866e06331c770c139ca208c66d621c1b0f57ad6c0350051c79
+         updated      6c7d461fe3042d18a412e3013747c2642ef824db896768daa8fee60b196d5d45
+
+Internal builds before 3.1.9-syn (2026-10-11, not published): 3.1.E (Filt tab), 3.1.F (Main tab
+layout), 3.1.G (Glide), 3.1.H (Synb0x startup screen), 3.1.I (less CPU), 3.1.J (Filt tab modulation
+indicators, Filter shown as 0-100 %).
+
+
+== Base: blackbox-mod 3.1.n by Justin Joe (j3threejay) ==
+
+Date:    2026-10-03 (the only upstream commit in this repository; builds 3.1.a - 3.1.m are not in it)
+Status:  Upstream release, the starting point for Synb0x
+Base:    stock 1010music Blackbox 3.1.9
+Features of 3.1.n:
+- Solo in the mixer (MIX cycles Mixer -> Mute -> Solo).
+- Slicer knobs on the waveform screen: slice Start, slice End, Zoom.
+- Pad-1 ducker sources EXP1, EXP2, PUMP, LINR for sidechain pumping.      (removed in Synb0x)
+- Chords on the Keys screen.                                             (removed in Synb0x)
+- Note conditions 1:2 ... 8:8 in the piano roll.                         (removed in Synb0x)
+- Fidelity (was Interp): sample-rate crunch plus SP1200, SP-12, S950, MPC60 and SP Raw modes.
+- Filter: 24 dB/oct state-variable filter, drive as Res goes past noon.
+- Saturation (was Overdrive): soft saturation instead of hard clip.
+- Master compressor models: Stock, Glue, Punch, Opto, Squash, Limit, plus Comp Thresh.
+- Reverb Type: Plate or Room.
+- Delay Type: Delay or Munchi (granular delay, port of CHOMPI TEMPO).
+- Sequencer fix for notes just ahead of the playhead.                    (removed in Synb0x)
+- CPU meter next to the version (per the Synb0x README; not in the 3.1.n feature list).
+- Browser patcher and Python patcher.                                     (browser one removed)
+

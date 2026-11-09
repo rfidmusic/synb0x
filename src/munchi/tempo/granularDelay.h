@@ -359,7 +359,7 @@ class granularDelay {
         buffer_[idx] = mbuf_store((in_l + cur_sig_l_) * lockEnv);
         buffer_[idx + 1] = mbuf_store((in_r + cur_sig_r_) * lockEnv);
 
-        write_head_ = (write_head_ + 1) % buffer_size_;
+        write_head_ = write_head_ + 1 >= buffer_size_ ? 0 : write_head_ + 1;   // Synb0x: no division per sample
     }
 
     void read(float* out_l, float* out_r)
@@ -598,7 +598,7 @@ class granularDelay {
             size_t idx = frozen_write_head * 2;
             frozen_buffer_[idx] = mbuf_store(*out_l);
             frozen_buffer_[idx + 1] = mbuf_store(*out_r);
-            frozen_write_head = (frozen_write_head + 1) % buffer_size_;
+            frozen_write_head = frozen_write_head + 1 >= buffer_size_ ? 0 : frozen_write_head + 1;   // Synb0x: (as above)
         }
     }
 

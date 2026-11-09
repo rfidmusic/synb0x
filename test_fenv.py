@@ -16,7 +16,7 @@ from unicorn.arm_const import UC_ARM_REG_R0, UC_ARM_REG_SP
 
 from emu import Emu
 
-IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 P_FILTER = 200
 P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, _UNUSED, P_FDEPTH = range(0x1E1, 0x1E7)
@@ -62,10 +62,21 @@ want = [("list", P_FTYPE, ["LP", "HP", "BP"], "Type:", "fenvtype"),
         ("num", P_FDEPTH, 9, "Depth:", -1000, 1000, "fenvdepth"),
         ("list", 0x1E7, ["Off", "Always", "Legato"], "Glide:", "glidemode"),
         ("num", 0x1E8, 8, "Glide Time:", 0, 1000, "glidetime"),
-        ("num", 0x1EC, 8, "AD Attack:", 0, 1000, "adattack"),
+        ("num", 0x1EC, 8, "AD Atk:", 0, 1000, "adattack"),                # 3.1.v7: "AD Atk:"
         ("num", 0x1ED, 8, "AD Decay:", 0, 1000, "addecay"),
-        ("num", 0x1EE, 4, "1-Shot", 0, 1000, "lfomode")]                 # a button (type 4), like stock Key Trig
-check("Type (hidden, for old presets), Morph, A/D/S/R/Depth, Glide, Glide Time, AD Attack / Decay, 1-Shot button registered "
+        ("num", 0x1C0, 8, "Atk Slope:", 0, 1000, "adatkslope"),           # 3.1.v7 (1-Shot removed)
+        ("num", 0x1C1, 8, "Dec Slope:", 0, 1000, "addecslope"),
+        ("list", 0x1EF, ["SEM", "Polivoks"], "Filter Type:", "filtermodel"),   # on the Conf tab (Stock removed)
+        ("num", 0x1F0, 4, "Osc", 0, 1000, "oscon"),                       # 3.1.uo: the oscillator (Osc tab)
+        ("num", 0x1F1, 4, "OSC/MOD", 0, 1000, "oscmode"),
+        ("list", 0x1F2, ["Sine", "Square", "Triangle", "Saw"], "Wave:", "oscwave"),   # a selector
+        ("num", 0x1F3, 8, "Level:", 0, 1000, "osclevel"),
+        ("list", 0x1DC, ["-3", "-2", "-1", "0", "+1", "+2", "+3"], "Octave:", "oscoctave"),
+        ("num", 0x1DD, 8, "Tune:", 0, 1000, "osctune"),
+        ("num", 0x1DE, 9, "Fine:", -1000, 1000, "oscfine"),
+        ("num", 0x1DF, 9, "Pulse W:", -1000, 1000, "oscpw"),
+        ("num", 0x1E0, 4, "Osc Track", 0, 1000, "osctrack")]                     # S.1: a button on the Osc tab (3.1.uk: list, Conf)
+check("Type (hidden, for old presets), Morph, A/D/S/R/Depth, Glide, Glide Time, AD Atk / Decay, Atk / Dec Slope (no 1-Shot), Filter Type, Osc, Osc Track registered "
       "with unique xml names", regs[1:] == want and len({r[-1] for r in regs}) == len(regs), regs[1:])
 check("new ids are below the 500-slot parameter table", all(r[1] < 500 for r in regs))
 check("the hook replaces the Filter registration call", e.r16(0x0808D59C) != 0xF7FE)
@@ -75,9 +86,9 @@ sites = {0x08056FF8: "lfo_update_a", 0x0805800A: "lfo_update_a", 0x08066838: "lf
 check("the three LFO updates (sample, multisample, clip / slicer voices) call lfo_update_a / _b",
       all(bytes(e.uc.mem_read(a, 4)) == _bl(a, e.sym[f]) for a, f in sites.items()))
 
-# --- capacity: movs r1,#64 -> #72 at both allocation sites
-check("store capacity raised to 72 at 0x080949f0 and 0x08093f26",
-      e.r16(0x080949F0) == 0x2148 and e.r16(0x08093F26) == 0x2148, (hex(e.r16(0x080949F0)), hex(e.r16(0x08093F26))))
+# --- capacity: movs r1,#64 -> #88 at both allocation sites (3.1.uo 80, 3.1.uk 88)
+check("store capacity raised to 88 at 0x080949f0 and 0x08093f26",
+      e.r16(0x080949F0) == 0x2158 and e.r16(0x08093F26) == 0x2158, (hex(e.r16(0x080949F0)), hex(e.r16(0x08093F26))))
 
 # --- pad record defaults through the real stock function, with the stock allocator
 POOL, LIMIT = 0x24030000, 0x24038000
@@ -99,34 +110,44 @@ def defaults(kind):
 
 for kind, name in ((3, "sample pad"), (0x4C, "empty pad")):
     ent, count, cap = defaults(kind)
-    check(f"{name}: capacity 72, {count} entries, none dropped", cap == 72 and count <= cap and count == len(ent), (cap, count))
+    check(f"{name}: capacity 88, {count} entries, none dropped", cap == 88 and count <= cap and count == len(ent), (cap, count))
     check(f"{name}: Filter defaults fully open (1000)", ent.get(P_FILTER) == 1000, ent.get(P_FILTER))
     check(f"{name}: Morph 0 (LP), Type LP, A 0, D 300, S 0, R 300, Depth 0",
           [ent.get(i) for i in (0x1E9, P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH)] == [0, 0, 0, 300, 0, 300, 0],
           [ent.get(i) for i in (0x1E9, P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH)])
     check(f"{name}: stock Res default unchanged (500)", ent.get(0x11) == 500, ent.get(0x11))
     if kind == 3:
-        check(f"sample pad: stock entries after Filter still present (0xdc last), 71 entries (of 72)", 0xDC in ent and count == 71, count)
+        check(f"sample pad: stock entries after Filter still present (0xdc last), 82 entries (of 88)", 0xDC in ent and count == 82, count)
+    check(f"{name}: Filter Type SEM (0), stored right after AD Decay", ent.get(0x1EF) == 0, ent.get(0x1EF))
     check(f"{name}: Glide Off, Glide Time 200", (ent.get(0x1E7), ent.get(0x1E8)) == (0, 200), (ent.get(0x1E7), ent.get(0x1E8)))
     arr = e.r32(STORE + 4)
     ids = [e.r16(arr + 8 * i) for i in range(count)]
-    check(f"{name}: AD Attack 0, AD Decay 300, LFO Mode Loop, stored side by side in that order",
-          (ent.get(0x1EC), ent.get(0x1ED), ent.get(0x1EE)) == (0, 300, 0)
-          and ids.index(0x1ED) == ids.index(0x1EC) + 1 and ids.index(0x1EE) == ids.index(0x1EC) + 2,
+    check(f"{name}: AD Attack 0, AD Decay 300, then Filter Type, side by side; no LFO Mode (3.1.v7)",
+          (ent.get(0x1EC), ent.get(0x1ED)) == (0, 300) and 0x1EE not in ent
+          and ids.index(0x1ED) == ids.index(0x1EC) + 1 and ids.index(0x1EF) == ids.index(0x1EC) + 2,
           (ent.get(0x1EC), ent.get(0x1ED), ent.get(0x1EE)))
-    check(f"{name}: the record still fits (capacity 72)", count <= 72, count)
+    check(f"{name}: the record still fits (capacity 88)", count <= 88, count)
+    check(f"{name}: oscillator Off, OSC, sine, Level 70 %, Octave 0, Tune centre, Fine 0, PW 0, right after Filter Type",
+          [ent.get(i) for i in (0x1F0, 0x1F1, 0x1F2, 0x1F3, 0x1DC, 0x1DD, 0x1DE, 0x1DF)] == [0, 0, 0, 700, 3, 500, 0, 0]
+          and ids[ids.index(0x1EF) + 1:ids.index(0x1EF) + 9] == [0x1F0, 0x1F1, 0x1F2, 0x1F3, 0x1DC, 0x1DD, 0x1DE, 0x1DF],
+          [ent.get(i) for i in (0x1F0, 0x1F1, 0x1F2, 0x1F3, 0x1DC, 0x1DD, 0x1DE, 0x1DF)])
+    check(f"{name}: Osc Track On (as 3.1.uo), stored right after Pulse W",
+          ent.get(0x1E0) == 1 and ids.index(0x1E0) == ids.index(0x1DF) + 1, ent.get(0x1E0))
+    check(f"{name}: Atk Slope 50 % (linear), Dec Slope 27 % (the earlier decay), right after Osc Track (3.1.v7)",
+          (ent.get(0x1C0), ent.get(0x1C1)) == (500, 270) and ids.index(0x1C0) == ids.index(0x1E0) + 1
+          and ids.index(0x1C1) == ids.index(0x1E0) + 2, (ent.get(0x1C0), ent.get(0x1C1)))
     e.call(0x08093E9C, STORE, P_FDECAY)
     check(f"{name}: stock lookup finds the new entries", e.uc.reg_read(UC_ARM_REG_R0) == 300)
 
 # --- modulation: KEY and FENV in the Source list
 names, codes = e.r32(0x0808CCC0), e.r32(0x0809A69C)
-listed = [(e.cstr(e.r32(names + 4 * i)), e.r16(codes + 2 * i)) for i in range(11)]
-check("Source list: stock eight, then KEY (0xe), FENV (1) and AD (2)", listed[:2] == [("none", 0), ("VEL", 0xD)] and
-      listed[8:] == [("KEY", 0xE), ("FENV", 1), ("AD", 2)], listed)
+listed = [(e.cstr(e.r32(names + 4 * i)), e.r16(codes + 2 * i)) for i in range(12)]
+check("Source list: stock eight, then KEY (0xe), FENV (1), AD (2) and OSC (3)", listed[:2] == [("none", 0), ("VEL", 0xD)] and
+      listed[8:] == [("KEY", 0xE), ("FENV", 1), ("AD", 2), ("OSC", 3)], listed)
 check("all five list-table references point at the new tables",
       e.r32(0x080B6964) == names and e.r32(0x080B696C) == codes and e.r32(0x080B7B00) == codes)
-check("list length 11 at the registration and both screen loops",
-      e.r16(0x0808CB3E) == 0x210B and e.r16(0x080B67CC) == 0x2B0B and e.r16(0x080B7994) == 0x200B)
+check("list length 12 at the registration and both screen loops",
+      e.r16(0x0808CB3E) == 0x210C and e.r16(0x080B67CC) == 0x2B0C and e.r16(0x080B7994) == 0x200C)
 
 PADA, VOICE, MSG, PADB = 0x24040000, 0x24041000, 0x24042000, 0x24043000
 F32 = lambda a: struct.unpack("<f", e.uc.mem_read(a, 4))[0]
@@ -207,7 +228,7 @@ check("clip / slicer: KEY -> Res still routed by stock (pad + 0x2b0)", slots(PAD
 APPB, REFB, OUT = 0x24010000, 0x24046000, 0x24046100
 store = APPB + 0x1840 + 1 * 0xF0 + 2 * 0x30
 ARRB = 0x24052000
-ours = [P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH, 0x1E7, 0x1E8, 0x1EC, 0x1ED, 0x1EE]
+ours = [P_FTYPE, P_FATTACK, P_FDECAY, P_FSUSTAIN, P_FRELEASE, P_FDEPTH, 0x1E7, 0x1E8, 0x1EC, 0x1ED, 0x1C0, 0x1C1]
 e.uc.mem_write(ARRB, b"".join(struct.pack("<HHi", pid, 0, 100 + k) for k, pid in enumerate(ours)))
 e.w32(store + 4, ARRB)
 e.uc.mem_write(store + 10, struct.pack("<H", len(ours)))
@@ -224,5 +245,18 @@ e.call(0x08099504, APPB, REFB, 0x1E5, OUT)
 check("(0x1e5, Filter Release's old id, is the hidden Keys switch: the getter returns app+0x8cc7, not the record)",
       e.r32(OUT) == 1 and P_FRELEASE != 0x1E5)
 
+
+# (3.1.v7) the LFO's Depth fixed at 100 %: the stock LFO update (FUN_0806f108) multiplies its wave by the modulated
+# Depth (FUN_0806fb30, now not called); with Depth at 41 % its output is the wave itself
+from unicorn.arm_const import UC_ARM_REG_S0 as _S0
+LFOO, LPAR = 0x24060000, 0x24061000
+depth_reads = []
+e.stubs[0x080705E8] = lambda: (e.uc.reg_write(_S0, struct.unpack("<I", struct.pack("<f", -0.37))[0]), e.ret())
+e.stubs[0x0806FB30] = lambda: (depth_reads.append(1), e.uc.reg_write(_S0, struct.unpack("<I", struct.pack("<f", 0.41))[0]), e.ret())
+e.w32(LFOO + 4, LPAR)
+e.call(0x0806F108, LFOO)
+out = struct.unpack("<f", e.uc.mem_read(LFOO + 0x3C, 4))[0]
+check(f"LFO Depth fixed at 100 %: output = the wave ({out:.2f}), the Depth knob not read", abs(out + 0.37) < 1e-6 and not depth_reads,
+      (out, depth_reads))
 print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)

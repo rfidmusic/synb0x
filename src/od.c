@@ -93,6 +93,69 @@ static inline __attribute__((always_inline)) float clip(float u)
     return u * (1.0f - 0.148148f * u * u);
 }
 
+/*
+ * The sample loop. Per sample the arithmetic is one long dependent chain (clip, warmth, DC blocker, tone, level), so
+ * one channel at a time leaves the FPU waiting on each result. These do two samples of both channels (or two samples of
+ * the one channel) together: the clip and warmth of each are independent, only the DC blocker and the tone carry from
+ * sample to sample. The same operations in the same order as before on every sample: the output is bit for bit the
+ * same. (-O2 here: its scheduler interleaves the chains; -Os keeps them apart.)
+ */
+struct od_k { float gain, inv_head, head, k, tone, post; };
+
+static inline __attribute__((always_inline)) float od_shape(const struct od_k *q, float x)
+{
+    float c = q->head * clip(x * q->gain * q->inv_head);
+    return c + q->k * c * c;
+}
+
+static inline __attribute__((always_inline)) float od_tail(const struct od_k *q, float y, float *hx, float *hy,
+                                                           float *lp)
+{
+    float h = y - *hx + DC_R * *hy;
+    *hx = y;
+    *hy = h;
+    *lp += q->tone * (h - *lp);
+    return *lp * q->post;
+}
+
+__attribute__((optimize("O2"), noinline))
+static void od_stereo(const struct od_k *qp, float *l, float *r, int n, float *sl, float *sr)
+{
+    const struct od_k q = *qp;
+    float lx = sl[0], ly = sl[1], ll = sl[2], rx = sr[0], ry = sr[1], rl = sr[2];
+    int i = 0;
+    for (; i + 1 < n; i += 2) {
+        float a0 = od_shape(&q, l[i]), b0 = od_shape(&q, r[i]);
+        float a1 = od_shape(&q, l[i + 1]), b1 = od_shape(&q, r[i + 1]);
+        l[i] = od_tail(&q, a0, &lx, &ly, &ll);
+        r[i] = od_tail(&q, b0, &rx, &ry, &rl);
+        l[i + 1] = od_tail(&q, a1, &lx, &ly, &ll);
+        r[i + 1] = od_tail(&q, b1, &rx, &ry, &rl);
+    }
+    if (i < n) {
+        l[i] = od_tail(&q, od_shape(&q, l[i]), &lx, &ly, &ll);
+        r[i] = od_tail(&q, od_shape(&q, r[i]), &rx, &ry, &rl);
+    }
+    sl[0] = lx; sl[1] = ly; sl[2] = ll;
+    sr[0] = rx; sr[1] = ry; sr[2] = rl;
+}
+
+__attribute__((optimize("O2"), noinline))
+static void od_mono(const struct od_k *qp, float *x, int n, float *st)
+{
+    const struct od_k q = *qp;
+    float hx = st[0], hy = st[1], lp = st[2];
+    int i = 0;
+    for (; i + 1 < n; i += 2) {
+        float a0 = od_shape(&q, x[i]), a1 = od_shape(&q, x[i + 1]);
+        x[i] = od_tail(&q, a0, &hx, &hy, &lp);
+        x[i + 1] = od_tail(&q, a1, &hx, &hy, &lp);
+    }
+    if (i < n)
+        x[i] = od_tail(&q, od_shape(&q, x[i]), &hx, &hy, &lp);
+    st[0] = hx; st[1] = hy; st[2] = lp;
+}
+
 /* Replaces both calls to the stock overdrive process (sample pads @0x08059ab6, clip / slicer pads @0x08068b12). */
 void od_process(const uint8_t *obj, float *left, float *right, int n)
 {
@@ -115,27 +178,23 @@ void od_process(const uint8_t *obj, float *left, float *right, int n)
     float tone = 1.0f - 0.4f * d;                            /* one-pole coefficient: 1 = open */
 
     volatile struct od_slot *s = slot_for(obj);
-    float *ch[2] = {left, right};
+    struct od_k q = {gain, inv_head, head, k, tone, post};
+    float st[2][3];                                          /* per channel: hp_x, hp_y, lp */
     for (int c = 0; c < 2; c++) {
-        float *x = ch[c];
-        if (!x)
-            continue;
-        float hx = s ? s->hp_x[c] : 0.0f, hy = s ? s->hp_y[c] : 0.0f, lp = s ? s->lp[c] : 0.0f;
-        for (int i = 0; i < n; i++) {
-            float c = head * clip(x[i] * gain * inv_head);
-            float y = c + k * c * c;
-            float h = y - hx + DC_R * hy;
-            hx = y;
-            hy = h;
-            lp += tone * (h - lp);
-            x[i] = lp * post;
-        }
-        if (s) {
-            s->hp_x[c] = hx;
-            s->hp_y[c] = hy;
-            s->lp[c] = lp;
-        }
+        st[c][0] = s ? s->hp_x[c] : 0.0f;
+        st[c][1] = s ? s->hp_y[c] : 0.0f;
+        st[c][2] = s ? s->lp[c] : 0.0f;
     }
+    if (right)
+        od_stereo(&q, left, right, n, st[0], st[1]);
+    else
+        od_mono(&q, left, n, st[0]);
+    if (s)
+        for (int c = 0; c < (right ? 2 : 1); c++) {
+            s->hp_x[c] = st[c][0];
+            s->hp_y[c] = st[c][1];
+            s->lp[c] = st[c][2];
+        }
 }
 
 int pad_machine_mode(const uint8_t *pad);       /* filter.c */
@@ -160,3 +219,6 @@ void od_process_a(const uint8_t *obj, float *left, float *right, int n)
     }
     od_process(obj, left, right, n);
 }
+
+/* The pad Overdrive knob's label (patches/od.py points the registration's literal here; the xml name stays) */
+const char od_label[] = "Saturation:";

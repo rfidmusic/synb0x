@@ -13,7 +13,7 @@ from unicorn.arm_const import UC_ARM_REG_CPSR, UC_ARM_REG_LR, UC_ARM_REG_PC, UC_
 
 from emu import RET, STACK, Emu
 
-IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 stock = Emu("firmware/BLACKBOX-3.1.9.bin", "out/cave.elf")
 P_FILTER, P_RES = 200, 0x11
@@ -40,8 +40,9 @@ e.stub(0x080C4ED8, lambda: events.append(("add", (e.arg(1) - SLOTS) // 0xA0, e.r
 e.w32(VTBL + 0x24, SET_ID | 1)
 for s in range(6):
     e.w32(SLOTS + s * 0xA0, VTBL)
-names = ["Main", "Pos", "Mod", "Gran", "Conf", "Filt"]       # LFO is shown as Mod
-want_tabs = {0: [0, 5, 1, 2, 4], 1: [0, 5, 1, 2, 3, 4], 2: [0, 5, 2, 4]}
+names = ["Main", "Pos", "Mod", "Gran", "Conf", "Filt"]       # LFO is shown as Mod; tab 3 is Osc on bars 0 and 2
+# bar 0 is built without Osc (filt_bar_show adds it for sample pads, below); multisample (bar 2) has it always
+want_tabs = {0: [0, 5, 1, 2, 4], 1: [0, 5, 1, 2, 3, 4], 2: [0, 3, 5, 2, 4]}
 for bar in range(3):
     events.clear()
     e.call("filt_tabs", BAR, SLOTS + 4 * 0xA0, bar)
@@ -49,11 +50,53 @@ for bar in range(3):
     labels = {s: v for k, s, v in events if k == "label"}
     added = [s for k, s, _ in events if k == "add"]
     counts = {c for k, _, c in events if k == "add"}
-    check(f"bar {bar}: all six buttons named (ids 0x12f..0x134, Main, Pos, Mod (was LFO), Gran, Conf, Filt)",
-          ids == {s: 0x12F + s for s in range(6)} and labels == dict(enumerate(names)), (ids, labels))
+    want_names = dict(enumerate(names)) if bar == 1 else {**dict(enumerate(names)), 3: "Osc"}
+    check(f"bar {bar}: all six buttons named (ids 0x12f..0x134, Main, Pos, Mod (was LFO), {want_names[3]}, Conf, Filt)",
+          ids == {s: 0x12F + s for s in range(6)} and labels == want_names, (ids, labels))
     shown = list(reversed(added))                    # the bar places the first insert rightmost
-    check(f"bar {bar}: on screen " + " ".join(names[t] for t in shown), shown == want_tabs[bar], shown)
+    check(f"bar {bar}: on screen " + " ".join(want_names[t] for t in shown), shown == want_tabs[bar], shown)
     check(f"bar {bar}: count {len(want_tabs[bar])} set before the first insert", counts == {len(want_tabs[bar])}, counts)
+
+# --- filt_bar_show: bar 0 (sample, clip, slicer) gets the Osc tab only while a sample pad is shown
+SCREEN = 0x24060000
+SBAR, SSLOT0 = SCREEN + 0xF6D0, SCREEN + 0x104F8 - 0x3C0
+SSTORE, SARR = SCREEN + 0x7D8, 0x24068000
+shows, unlinks = [], []
+e.stub(0x080B8724, lambda: shows.append(e.arg(1)))
+e.stub(0x080AEC62, lambda: (unlinks.append((e.arg(1) - SSLOT0) // 0xA0), e.w32(e.arg(1) + 0x2C, 0)))
+e.stub(0x080C4ED8, lambda: (events.append(("add", (e.arg(1) - SSLOT0) // 0xA0, e.r16(e.arg(0) + 0x36))),
+                            e.w32(e.arg(1) + 0x2C, e.arg(0))))
+for t in range(6):
+    e.w32(SSLOT0 + t * 0xA0, VTBL)
+    e.w32(SSLOT0 + t * 0xA0 + 0x2C, 0)
+
+
+def show(mode, bar=0):
+    e.uc.mem_write(SARR, struct.pack("<HHi", 0x8B, 0, mode))
+    e.w32(SSTORE + 4, SARR)
+    e.uc.mem_write(SSTORE + 10, struct.pack("<H", 1))
+    events.clear(), shows.clear(), unlinks.clear()
+    e.call("filt_bar_show", SCREEN, bar)
+    return list(reversed([s for k, s, _ in events if k == "add"])), list(unlinks), list(shows)
+
+
+events.clear()
+e.call("filt_tabs", SBAR, SSLOT0 + 4 * 0xA0, 0)                          # bar 0 as the screen builds it: no Osc
+for t in range(6):                                                       # (the stub add above set the parents)
+    pass
+added, gone, shown_bar = show(0)
+check("bar 0, sample pad: laid out again with Osc: Main Osc Filt Pos Mod Conf, then shown",
+      added == [0, 3, 5, 1, 2, 4] and sorted(gone) == [0, 1, 2, 4, 5] and shown_bar == [0], (added, gone, shown_bar))
+added, gone, shown_bar = show(0)
+check("bar 0, the next sample pad: already right, left alone", added == [] and gone == [] and shown_bar == [0], (added, gone))
+added, gone, shown_bar = show(1)
+check("bar 0, clip pad: Osc taken out again: Main Filt Pos Mod Conf",
+      added == [0, 5, 1, 2, 4] and sorted(gone) == [0, 1, 2, 3, 4, 5], (added, gone))
+added, gone, shown_bar = show(2)
+check("bar 0, slicer pad: no Osc, left alone", added == [] and gone == [], (added, gone))
+added, gone, shown_bar = show(3, bar=1)
+check("granular (bar 1): never touched", added == [] and gone == [] and shown_bar == [1], (added, gone, shown_bar))
+e.stub(0x080C4ED8, lambda: events.append(("add", (e.arg(1) - SLOTS) // 0xA0, e.r16(BAR + 0x36))))
 
 # --- the Filt page
 APP = 0x24010000
@@ -113,10 +156,14 @@ for tab in range(5):
     calls.clear()
     e.call("filt_page", APP, REF, 0x24047000, tab)
     if tab == 2:
-        check("tab 2 (Mod): the stock LFO page, then LFO Mode, AD Attack, AD Decay from the pad's record "
-              "(bottom row: Key Trig, LFO Mode, AD Attack, AD Decay)",
-              calls == [("stock", 2), ("add", 0x1EE, vals.get(0x1EE, 0)), ("add", 0x1EC, vals.get(0x1EC, 0)),
-                        ("add", 0x1ED, vals.get(0x1ED, 0))], calls)
+        check("tab 2 (Mod): the stock LFO page, then AD Atk, AD Decay, Atk Slope, Dec Slope from the pad's record",
+              calls == [("stock", 2), ("add", 0x1EC, vals.get(0x1EC, 0)), ("add", 0x1ED, vals.get(0x1ED, 0)),
+                        ("add", 0x1C0, vals.get(0x1C0, 0)), ("add", 0x1C1, vals.get(0x1C1, 0))], calls)
+    elif tab == 3:
+        osc_ids = (0x1F2, 0x1F3, 0x1DC, 0x1DD, 0x1DE, 0x1DF, 0x1F0, 0x1E0)
+        check("tab 3 of a sample pad: the Osc page: Wave, Level, Octave, Tune / Fine, Pulse W, Osc, Osc Track (no "
+              "OSC/MOD: the oscillator only modulates; S.1: Osc Track from the Conf tab)",
+              calls == [("clear",)] + [("add", i, vals.get(i, 0)) for i in osc_ids], calls)
     else:
         check(f"tab {tab}: stock page list", calls == [("stock", tab)], calls)
 for kind, what in ((0x40, "global settings"), (0x41, "kind 0x41"), (0x0100 | 0x21, "an FX cell")):
@@ -177,8 +224,8 @@ for mode in (-1, 0, 1, 2, 3, 4):
         a, b = clamp(e, state, mode), clamp(stock, state, mode)
         if a != b:
             diff.append((mode, hex(state), hex(a), hex(b)))
-check("clamp: identical to stock except Filt (0x1d) kept for pad modes 0..3",
-      sorted(diff) == sorted((m, "0x1d", "0x1d", "0x18") for m in (0, 1, 2, 3)), diff)
+check("clamp: identical to stock except Filt (0x1d) kept for pad modes 0..3 and Osc (0x1b) for sample pads",
+      sorted(diff) == sorted([(m, "0x1d", "0x1d", "0x18") for m in (0, 1, 2, 3)] + [(0, "0x1b", "0x1b", "0x18")]), diff)
 
 # --- the Filter knob's number: 0..100 %, display only, through the real knob-cell formatter
 CELL = 0x24048000
@@ -208,12 +255,13 @@ check("knob-cell formatter calls go through the wrapper (3 sites)",
 
 # --- Morph is a modulation target: the 28-id stock list + Morph, at every place that reads it
 targets = e.r32(0x080B8924) & 0xFFFFFFFF
-ids = list(struct.unpack("<29H", e.uc.mem_read(targets, 58)))
+ids = list(struct.unpack("<32H", e.uc.mem_read(targets, 64)))
 stock_ids = list(struct.unpack("<28H", stock.uc.mem_read(0x080F12BC, 56)))
-check("modulation targets: the stock 28 ids, then Morph (0x1e9)", ids == stock_ids + [0x1E9], [hex(i) for i in ids])
-check("both references and all three lengths updated (29 ids, end = start + 58)",
-      e.r32(0x080B8BF8) & 0xFFFFFFFF == targets and e.uc.mem_read(0x080B88D6, 4) == bytes.fromhex("03f13a01")
-      and e.r16(0x080B896A) == 0x221D and e.r16(0x080B8980) == 0x221D)
+check("modulation targets: the stock 28 ids, then Morph (0x1e9) and the oscillator's Pulse W, Level, Tune (not Wave)",
+      ids == stock_ids + [0x1E9, 0x1DF, 0x1F3, 0x1DD], [hex(i) for i in ids])
+check("both references and all three lengths updated (32 ids, end = start + 64)",
+      e.r32(0x080B8BF8) & 0xFFFFFFFF == targets and e.uc.mem_read(0x080B88D6, 4) == bytes.fromhex("03f14001")
+      and e.r16(0x080B896A) == 0x2220 and e.r16(0x080B8980) == 0x2220)
 SCREEN2 = 0x24000000
 for pid, want in ((0x1E9, 1), (200, 1), (P_FATTACK, 0), (0x1E1, 0)):
     e.uc.mem_write(SCREEN2 + 0xF6CC, struct.pack("<I", 5))
@@ -233,16 +281,54 @@ check("Main tab in all nine tables: Level, Pitch, Pan, Saturation / Attack, Deca
       all(m == (4, 0x5C, 0x62, 0xDB, 0x3C, 0x3E, 0x3F, 0x40) for m in mains), mains)
 
 
+BUTTONS = (0x1F0, 0x1F1, 0x0C, 0x0D)                   # type-4 buttons: Osc, (OSC/MOD); stock Beat Sync, Key Trig
+
+
 def rows_stay(ids):
     """The grid's own rule (FUN_080a87b6): after a refresh it leaves the bottom row if slots 2-3 hold no knob and the
-    top row if slots 0-1 hold none (id 1 = blank). Both halves need a knob for both rows to stay selectable."""
-    knob = [i not in (0, 1) for i in ids]
+    top row if slots 0-1 hold none (id 1 = blank; a type-4 button is no knob either). Both halves need a knob for both
+    rows to stay selectable."""
+    knob = [i not in (0, 1) and i not in BUTTONS for i in ids]
     return (knob[0] or knob[1]) and (knob[2] or knob[3])
 
 
 check("Main tab: both knob rows stay selectable after a value change", all(rows_stay(m) for m in mains), mains)
+
+# (3.1.v7) the Mod tab from the stock LFO page's real entries: Waveform 8, Rate 9 (or the synced 10), Depth 0xb,
+# Beat Sync 0xc, Key Trig 0xd, each with modulation marks; reordered Waveform, Trig, Rate, Beat, Depth left out
+def mod_page(rate_id):
+    def stock_lfo():
+        lst = e.arg(2)
+        ent = [(8, 3, 0x0E), (rate_id, 400, 0x0D), (0x0B, 410, 0x02), (0x0C, 1, 0), (0x0D, 1, 0)]
+        e.w32(lst, len(ent))
+        for k, (pid, v, mark) in enumerate(ent):
+            e.uc.mem_write(lst + 4 + 12 * k, struct.pack("<HHHHi", pid, mark, 0, 0, v))
+        e.ret(1)
+    e.stubs[0x08098D40] = stock_lfo
+    del e.stubs[0x080A5038]
+    e.uc.mem_write(0x24047000, bytes(0x260))
+    e.call("filt_page", APP, REF, 0x24047000, 2)
+    n = e.r32(0x24047000)
+    out = [(e.r16(0x24047000 + 4 + 12 * k), e.r16(0x24047000 + 6 + 12 * k), e.r32(0x24047000 + 12 + 12 * k)) for k in range(n)]
+    e.stub(0x080A5038, lambda: calls.append(("add", e.arg(1), struct.unpack("<i", struct.pack("<I", e.arg(2)))[0])))
+    e.stub(0x08098D40, lambda: calls.append(("stock", e.arg(3))), value=1)
+    return out
+
+
+for rid in (9, 10):
+    got = mod_page(rid)
+    ids = [g[0] for g in got]
+    check(f"Mod tab (rate {rid}): Waveform, Trig, Rate, Beat / AD Atk, AD Decay, Atk Slope, Dec Slope; no Depth; the "
+          "stock entries keep their values and modulation marks",
+          ids == [8, 0x0D, rid, 0x0C, 0x1EC, 0x1ED, 0x1C0, 0x1C1] and got[0][1:] == (0x0E, 3) and got[2][1:] == (0x0D, 400),
+          got)
+    check(f"Mod tab (rate {rid}): both knob rows stay selectable (a knob in slots 0-1 and in 2-3)", rows_stay(ids), ids)
 filt = struct.unpack("<8H", e.uc.mem_read(e.sym["filt_ids"], 16))
 check("Filt tab: both knob rows stay selectable after a value change", rows_stay(filt), filt)
+osc = struct.unpack("<8H", e.uc.mem_read(e.sym["osc_ids"], 16))
+check("Osc tab: both knob rows stay selectable after a value change (the buttons are not in slots 0-1)",
+      rows_stay(osc), osc)
+check("rule check: the 3.1.v Osc layout (Osc, OSC/MOD first) fails it", not rows_stay((0x1F0, 0x1F1, 0x1F2, 0x1F3)))
 
 print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)

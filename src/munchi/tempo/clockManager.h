@@ -13,14 +13,18 @@
 class clockManager
 {
   public:
-    void   setBpm(float bpm) { bpm_ = bpm < 20.f ? 20.f : bpm > 400.f ? 400.f : bpm; }
+    void   setBpm(float bpm) {
+        bpm_ = bpm < 20.f ? 20.f : bpm > 400.f ? 400.f : bpm;
+        interval_ = (size_t)(60000000.f / (bpm_ * 2.f));   /* Synb0x: once per tempo change, not every sample */
+    }
     float  bpm() const { return bpm_; }
     size_t getTempo() const { return (size_t)(bpm_ * 2.f + .5f); }
-    size_t getInterval() const { return (size_t)(60000000.f / (bpm_ * 2.f)); }
+    size_t getInterval() const { return interval_; }
     int    getClockDivPos(size_t) const { return div_pos_; }
     void   setDivPos(int p) { div_pos_ = p; }
 
   private:
     float bpm_     = 120.f;
+    size_t interval_ = (size_t)(60000000.f / (120.f * 2.f));
     int   div_pos_ = 2;
 };

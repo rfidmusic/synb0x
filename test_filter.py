@@ -1,4 +1,4 @@
-"""Pad crunch, state-variable filter (Morph LP - notch - HP, modulatable) and filter envelope under Unicorn.
+"""[3.1.uf: the SEM filter, Filter Type 1] Pad crunch, state-variable filter (Morph LP - notch - HP, modulatable) and filter envelope under Unicorn.
 
 Real firmware runs for: the stock cutoff and resonance curves, the audio-buffer accessors, both voice call-site thunks.
 Stubbed: the modulated-parameter read (returns test values).
@@ -9,11 +9,11 @@ import math
 import struct
 import sys
 
-from unicorn.arm_const import UC_ARM_REG_R6, UC_ARM_REG_S0
+from unicorn.arm_const import UC_ARM_REG_R4, UC_ARM_REG_R5, UC_ARM_REG_R6, UC_ARM_REG_R11, UC_ARM_REG_S0
 
 from emu import Emu
 
-e = Emu("out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+cave/BLACKBOX.bin", "out/cave.elf")
 
 OBJ, PARAMS, PAD, BUF, LBUF, RBUF, AMP = 0x24060000, 0x24061000, 0x24062000, 0x24063000, 0x24064000, 0x24066000, 0x24068000
 N = 64
@@ -23,6 +23,7 @@ P_FRELEASE = 0x1EB                                  # 0x1e5 is a hidden stock Ke
 P_FMORPH = 0x1E9
 LP, NOTCH, HP = 0, 500, 1000                        # Morph knob positions
 values = {}
+MODEL = 0                                       # Filter Type: 0 SEM, 1 Polivoks (Stock removed)
 
 
 def f32(x):
@@ -56,8 +57,14 @@ def set_pad(interp=0, row=PAD_ROW, col=PAD_COL, sat=0, ftype=LP, attack=0, decay
     if with_fenv:
         ent += [(P_FMORPH, ftype), (P_FTYPE, 0), (P_FATTACK, attack), (P_FDECAY, decay), (P_FSUSTAIN, sustain), (P_FRELEASE, release),
                 (P_FDEPTH, depth)]
-    if ad is not None:                               # AD Attack, AD Decay (, LFO Mode): side by side, as the defaults store them
-        ent += [(0x1EC, ad[0]), (0x1ED, ad[1])] + ([(0x1EE, ad[2])] if len(ad) > 2 else [])
+    if with_fenv:                                    # as the defaults store them (this suite's filter model)
+        ad = tuple(ad or (0, 300))
+        ad = ad + (500, 270)[len(ad) - 2:] if len(ad) < 4 else ad
+        ent += [(0x1EC, ad[0]), (0x1ED, ad[1]), (0x1EF, MODEL),       # 3.1.v7: AD pair, Filter Type, the oscillator's
+                (0x1F0, 0), (0x1F1, 0), (0x1F2, 0), (0x1F3, 700), (0x1DC, 3), (0x1DD, 500), (0x1DE, 0), (0x1DF, 0),
+                (0x1E0, 1), (0x1C0, ad[2]), (0x1C1, ad[3])]          # eight, Osc Track, Atk Slope, Dec Slope
+    elif ad is not None:
+        ent += [(0x1EC, ad[0]), (0x1ED, ad[1])]
     e.uc.mem_write(arr, b"".join(struct.pack("<HHi", i, 0, v) for i, v in ent))
     e.w32(store + 4, arr)
     e.uc.mem_write(store + 10, struct.pack("<H", len(ent)))
@@ -140,19 +147,50 @@ def weights(m):
     return (1.0 - m, 0.0, m)
 
 
-def model_svf(x, g, r, s, ftype, limit):
+OSC_FROM, R_FULL, R_TOP, KAP, CLAMP, G_REF = 0.85, 0.05524, -0.05, 0.5556, 2.0, 0.3
+BASS_A, BASS_MAX = 0.0156, 0.09          # the 2-pole SEM's bass shelf (3.1.v1)
+
+
+def model_svf(x, g, r, s, ftype, limit, osc=0.0, bass=0.0):
+    """The 2-pole SEM, one stage. limit: the resonant integrator's soft ceiling while driven (Res above noon); with osc
+    its cubic fades by (1 - osc)^4 and the ceiling moves to a plain clamp at CLAMP (1 + g); osc also adds 4 wl wh osc of
+    the band-pass to a Morph mix; bass: the shelf's weight (a one-pole of the low-pass, x LP's weight), while driven"""
     w = weights(ftype / 1000) if isinstance(ftype, int) else ftype
     h = 1 / (1 + r * g + g * g)
-    s1, s2 = s
+    s1, s2, z = s
+    if limit:
+        limit = f32(limit + osc * (CLAMP / 1.5 * (1 + g) - limit))
+    c3 = 0.0                                          # the 2-pole SEM: a plain clamp (3.1.v1)
+    fill = 4 * osc * w[0] * w[2] if limit and 0 < w[2] < 1 else 0.0
     out = []
     for v in x:
         hpv = (v - r * s1 - g * s1 - s2) * h
         bp = g * hpv + s1
-        s1 = soft(g * hpv + bp, limit) if limit else g * hpv + bp
+        s1 = g * hpv + bp
+        if limit:
+            u = min(max(s1 / limit, -1.5), 1.5)
+            s1 = limit * u * (1 - c3 * u * u)
         lp = g * bp + s2
         s2 = g * bp + lp
-        out.append(w[0] * lp + w[1] * r * bp + w[2] * hpv)
-    return out, [s1, s2]
+        y = w[0] * lp + w[1] * r * bp + w[2] * hpv + fill * bp
+        if limit:
+            z += BASS_A * (bass * lp - z)
+            y += w[0] * z
+        out.append(y)
+    return out, [s1, s2, z if limit else 0.0]
+
+
+def osc_of(res):
+    """self-oscillation amount: smoothstep from Res 0.85 to full"""
+    t = min(max((res - OSC_FROM) / (1 - OSC_FROM), 0.0), 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def r_agc(m, g):
+    """the resonant stage's damping for the next step: smoothed r plus the amplitude control from its states"""
+    s1, s2, _ = m.states[0]
+    cs = 1 - m.o * (1 - G_REF / g) if g > G_REF else 1.0
+    return cs * (m.r + KAP * m.o / (1 + g * g) * (s1 * s1 + s2 * s2))
 
 
 def g_of(p):
@@ -162,7 +200,13 @@ def g_of(p):
 
 
 def r_of(res):
-    return 1 / min(max(curve(0x080606C0, res), 0.1), 40.0)
+    """Res -> damping: below noon from Q 0.7071 (2-pole Butterworth: no peak) up to the stock noon Q on a log scale, as
+    filter.c; noon and above the stock curve"""
+    if res < 0.5:
+        q = f32(0.70711 * exp2f_fast(f32(f32(2.0 * max(res, 0.0)) * f32(0.92806))))
+    else:
+        q = curve(0x080606C0, res)
+    return 1 / min(max(q, 0.1), 40.0) - osc_of(res) * (R_FULL - R_TOP)
 
 
 def drive_of(res):
@@ -174,25 +218,24 @@ class Model:
     """One voice of the patched filter: per-32-frame cutoff steps, knob glide, Res / drive smoothed per block."""
     def __init__(self, knob, res, ftype, depth=0.0):
         self.pos = (knob + 1) / 2
-        self.base, self.r, self.d = self.pos, r_of(res), drive_of(res)
+        self.base, self.r, self.d, self.o = self.pos, r_of(res), drive_of(res), osc_of(res)
         self.res, self.ftype, self.depth = res, ftype, depth
-        self.states = [[0.0, 0.0], [0.0, 0.0]]
+        self.states = [[0.0, 0.0, 0.0]]
         self.first = True
 
     def block(self, x, levels=None, sub=32):
         if not self.first:
             self.r += 0.33333 * (r_of(self.res) - self.r)
             self.d += 0.33333 * (drive_of(self.res) - self.d)
+            self.o += 0.33333 * (osc_of(self.res) - self.o)
         self.first = False
-        if self.d > 0.001:
-            x = [soft(v * (1 + 3 * self.d), 1.0) for v in x]
         glide = 1 - exp2f_fast(-0.585 * sub / 256)
         out = []
         for k in range(0, len(x), sub):
             self.base += glide * (self.pos - self.base)
             g = g_of(self.base + self.depth * (levels[k // sub] if levels else 0.0))
-            y, self.states[0] = model_svf(x[k:k + sub], g, 1.84776, self.states[0], self.ftype, None)
-            y, self.states[1] = model_svf(y, g, self.r, self.states[1], self.ftype, 4 - 3 * self.d if self.d > 0.001 else None)
+            y, self.states[0] = model_svf(x[k:k + sub], g, r_agc(self, g), self.states[0], self.ftype,
+                                          8.0 if self.d > 0.001 else None, self.o, BASS_MAX * self.d)
             out += y
         return out
 
@@ -203,8 +246,8 @@ def model_block_w(m, x, w):
         m.first = False
     m.base += (1 - exp2f_fast(-0.585 * 32 / 256)) * (m.pos - m.base)
     g = g_of(m.base)
-    y, m.states[0] = model_svf(x, g, 1.84776, m.states[0], w, None)
-    y, m.states[1] = model_svf(y, g, m.r, m.states[1], w, 4 - 3 * m.d if m.d > 0.001 else None)
+    y, m.states[0] = model_svf(x, g, r_agc(m, g), m.states[0], w, 8.0 if m.d > 0.001 else None, m.o,
+                               BASS_MAX * m.d)
     return y
 
 
@@ -298,17 +341,31 @@ check("LP at 1 kHz passes 100 Hz and cuts 12 kHz", lp_low > 0.9 and lp_high < 0.
 hp_low, hp_high = response(k, 0.5, 100, HP), response(k, 0.5, 12000, HP)
 check("HP at 1 kHz cuts 100 Hz and passes 12 kHz", hp_low < 0.1 and hp_high > 0.9, (hp_low, hp_high))
 n_mid, n_low, n_high = response(k, 0.5, 1000, NOTCH), response(k, 0.5, 100, NOTCH), response(k, 0.5, 10000, NOTCH)
-check(f"notch at 1 kHz: cuts 1 kHz (x{n_mid:.3f}), 100 Hz and 10 kHz at the crossfade's -12 dB", n_mid < 0.05 and 0.2 < n_low < 0.3 and 0.2 < n_high < 0.3,
+check(f"notch at 1 kHz: cuts 1 kHz (x{n_mid:.3f}), 100 Hz and 10 kHz at the crossfade's -6 dB (one stage)", n_mid < 0.05 and 0.45 < n_low < 0.55 and 0.45 < n_high < 0.55,
       (n_mid, n_low, n_high))
 w = [weights(m / 1000) for m in range(0, 1001, 50)]
 check("Morph weights are a plain crossfade (LP + HP = 1)", all(abs(a + c - 1) < 1e-6 for a, _, c in w), w)
 sweep = [response(k, 0.5, 300, m) for m in (0, 250, 500, 750, 1000)]
 check("Morph sweep at 300 Hz (below the cutoff): LP passes it, HP cuts it, in between it moves steadily",
-      sweep[0] > 0.9 and sweep[-1] < 0.05 and all(b < a + 0.05 for a, b in zip(sweep, sweep[1:])), [round(v, 3) for v in sweep])
+      sweep[0] > 0.9 and sweep[-1] < 0.12 and all(b < a + 0.05 for a, b in zip(sweep, sweep[1:])), [round(v, 3) for v in sweep])
 one, two = response(k, 0.5, 2000), response(k, 0.5, 4000)
-check(f"24 dB/oct: one octave above cutoff {20 * math.log10(one):.0f} dB, two octaves {20 * math.log10(two):.0f} dB", two < 0.02 and two / one < 0.09, (one, two))
+check(f"12 dB/oct (2-pole, as the SEM): one octave above cutoff {20 * math.log10(one):.1f} dB (want -10.5), two octaves "
+      f"{20 * math.log10(two):.1f} dB (want -23.7)", 0.27 < one < 0.33 and 0.055 < two < 0.075, (one, two))
 flat, peak = response(k, 0.0, 1000), response(k, 0.5, 1000)
-check(f"resonance raises the level at the cutoff: x{peak / flat:.1f} at the default Res", peak > 3 * flat, (flat, peak))
+check(f"Res 0: no resonant peak ({20 * math.log10(flat):.1f} dB at the cutoff, Butterworth Q 0.707); "
+      f"default Res: Q 1.35 ({20 * math.log10(peak):.1f} dB at the cutoff)", 0.68 < flat < 0.74 and 1.25 < peak < 1.45,
+      (flat, peak))
+pb0, o1, o2 = response(k, 0.0, 250), response(k, 0.0, 2000), response(k, 0.0, 4000)
+check(f"Res 0: 12 dB/oct with a flat passband: {20 * math.log10(pb0):.1f} dB two octaves below, "
+      f"{20 * math.log10(o2 / o1):.1f} dB from one to two octaves above", pb0 > 0.9 and 0.2 < o2 / o1 < 0.3, (pb0, o1, o2))
+qs = [1 / r_of(v / 100) for v in range(0, 86, 5)]
+rs = [r_of(v / 100) for v in range(0, 101)]
+check("Res -> Q rises steadily from 0.707 up to Res 85 %, meeting the stock curve at noon and following it to 85 %",
+      abs(qs[0] - 0.70711) < 0.01 and all(b > a for a, b in zip(qs, qs[1:])) and abs(1 / r_of(0.4999) - 1 / r_of(0.5)) < 0.01
+      and abs(1 / r_of(0.85) - curve(0x080606C0, 0.85)) < 1e-3, [round(q, 3) for q in qs])
+zero = next(v for v in range(101) if rs[v] <= 0)
+check(f"Res -> damping keeps falling, through 0 (self-oscillation) at {zero} %, to {rs[-1]:.3f} at full",
+      all(b < a for a, b in zip(rs, rs[1:])) and 90 <= zero <= 96 and abs(rs[-1] - R_TOP) < 1e-4, rs[85:])
 reset()
 setup(-0.3, 1.0)
 worst = 0.0
@@ -438,10 +495,10 @@ opened = rms(out[N * 4:]) / rms(sine(400, n=N * 4))
 reset()
 setup(-1.0, 0.5, attack=0, decay=0, sustain=1000, release=0, depth=0)
 out = []
-for b in range(8):
+for b in range(24):                                   # (a 2-pole at 20 Hz rings a while after the note starts)
     l, _ = run(sine(400, start=b * N))
     out += l
-closed = rms(out[N * 4:]) / rms(sine(400, n=N * 4))
+closed = rms(out[N * 16:]) / rms(sine(400, n=N * 8))
 check(f"Depth +50 at full envelope opens a closed LP to 640 Hz (400 Hz: x{closed:.3f} -> x{opened:.2f})",
       closed < 0.01 and opened > 0.7, (closed, opened))
 reset()
@@ -643,7 +700,7 @@ check("crunch and filter together: crunched, then low-passed (no longer stair-st
 reset()
 setup(-0.6, 0.3)
 run(sine(997))
-check("state from an older build (magic SVF1) is reinitialised, not reused", e.r32(OBJ + 4) == 0x53564632)
+check("state from an older build (magic SVF1) is reinitialised, not reused (now the 2-pole's SEM2)", e.r32(OBJ + 4) == 0x53454d32)
 
 # --- cached settings positions follow the record when it changes
 def record(entries, row=PAD_ROW, col=PAD_COL, at=None):
@@ -687,7 +744,9 @@ e.call("pad_machine_mode", PAD)
 m0 = e.uc.reg_read(__import__("unicorn").arm_const.UC_ARM_REG_R0)
 check("Fidelity cache (overdrive / reader): follows a value change and a moved entry", (m1, m0) == (1, 0), (m1, m0))
 
-# --- call sites: both pass the pad from r6 and the voice's amp envelope stage
+# --- call sites (3.1.v+: the filter runs before the stock Level, Pan and amp envelope): both pass the pad from r6 and
+#     the voice's amp envelope stage. Class A from 0x08055bd6 (r4 voice, r5 buffer), class B from 0x080669c0 (r5 voice
+#     block, fp buffer); each first does the stock call it replaces.
 reset()
 setup(1.0, interp=7 + 1, attack=300)
 VOICE = OBJ - 0xA8                              # class A: filter object = voice + 0xa8, amp envelope stage = voice + 0x2c
@@ -695,7 +754,9 @@ e.uc.mem_write(VOICE + 0x2C, bytes([1]))
 e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
 e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
 e.uc.reg_write(UC_ARM_REG_R6, PAD)
-e.call("filter_voice_a", OBJ, BUF)
+e.uc.reg_write(UC_ARM_REG_R4, VOICE)
+e.uc.reg_write(UC_ARM_REG_R5, BUF)
+e.call("filter_voice_a", BUF, N)                # stock FUN_0804d8d0(buffer, frames), then the filter
 l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
 check("sample-pad call site passes its pad (r6): crunch applies", len(set(l)) <= N // 4 + 1)
 check("sample-pad call site passes the voice's amp stage: the envelope started", level() > 0.0, level())
@@ -711,11 +772,17 @@ for v in (0, 1):
     e.uc.mem_write(LBUF, struct.pack(f"<{N}f", *sine(997)))
     e.uc.mem_write(BUF, struct.pack("<IIIIBB", N, N, LBUF, 0, 0, 0))
     e.uc.reg_write(UC_ARM_REG_R6, CPAD)
+    e.uc.reg_write(UC_ARM_REG_R5, obj - 0x14C)
+    e.uc.reg_write(UC_ARM_REG_R11, BUF)
     values[PARAMS + 8] = 1.0
-    e.call("filter_voice_b", obj, BUF)
+    e.call("filter_voice_b", BUF, CPAD - 0x10, CPAD - 0x8)   # stock FUN_0804d944(buffer, &left, &right), then the filter
     l = struct.unpack(f"<{N}f", e.uc.mem_read(LBUF, 4 * N))
     check(f"clip / slicer voice {v + 1}: its pad's settings apply (crunch), amp stage read (envelope started)",
           len(set(l)) <= N // 4 + 1 and level(obj) > 0.0, (len(set(l)), level(obj)))
+    check(f"clip / slicer voice {v + 1}: the stock call it replaces still ran (channel pointers out)",
+          e.r32(CPAD - 0x10) & 0xFFFFFFFF == LBUF, hex(e.r32(CPAD - 0x10) & 0xFFFFFFFF))
+check("the stock filter calls after the envelopes are gone (0x08055c60, 0x080669d6: nops)",
+      all(e.r16(a) == 0xBF00 and e.r16(a + 2) == 0xBF00 for a in (0x08055C60, 0x080669D6)))
 
 # --- the AD envelope (modulation source AD) and LFO Mode 1-Shot: both run in the voice's LFO update, the first thing a
 #     voice does per block (lfo_update_a / _b), before it reads its modulated parameters. AD level at filter object
@@ -823,7 +890,7 @@ x = sine(300, 256)
 ws = []
 for b in range(12):
     block(x)
-    ws.append((ad_level(), struct.unpack("<f", e.uc.mem_read(OBJ + 0x90, 4))[0]))
+    ws.append((ad_level(), struct.unpack("<f", e.uc.mem_read(OBJ + 0x8C, 4))[0]))   # 3.1.uo: the Morph value (= HP weight)
 check("AD -> Morph: the HP weight follows the AD level block by block (Morph 0 + 100 % x AD)",
       all(abs(w - a) < 0.02 for a, w in ws[1:]) and max(a for a, _ in ws) > 0.5, ws[:6])
 
@@ -837,14 +904,14 @@ block()
 check("FENV and AD side by side: FENV at full (attack 0), AD just starting (attack 1.62 s)",
       level() > 0.98 and 0.0 < ad_level() < 0.01, (level(), ad_level()))
 
-# --- LFO Mode 1-Shot: one cycle from the note start (Key Trig sets the phase to 0), then it holds
-def lfo_run(mode, blocks, step):
+# --- the LFO always loops (3.1.v7: 1-Shot removed, the AD envelope does that job)
+def lfo_run(blocks, step):
     reset()
     vamp(1)
-    setup(1.0, ad=(0, 300, mode))
+    setup(1.0, ad=(0, 300))
     fresh()
     run([0.0] * 256, silent=True)                   # the cache learns this pad (as on the pad's earlier notes)
-    e.w32(LFO + 0x10, 0)                            # Key Trig: phase 0 at the note start
+    e.w32(LFO + 0x10, 0)
     e.w32(LFO + 0x14, step)
     out = []
     for _ in range(blocks):
@@ -853,17 +920,191 @@ def lfo_run(mode, blocks, step):
     return out
 
 
-step = int(2 ** 32 * 4.0 / 48000)                    # 4 Hz: one cycle in 46.9 blocks
-loop = lfo_run(0, 60, step)
-check("LFO Mode Loop: the LFO keeps cycling (the stock LFO)", loop[-1][1] == step and any(b[0] < a[0] for a, b in zip(loop, loop[1:])))
-shot = lfo_run(1, 60, step)
-wrap = next(i for i, (p, s_) in enumerate(shot) if s_ == 0)
-check(f"LFO Mode 1-Shot: stops after one cycle (block {wrap + 1} of {2 ** 32 / (step * 256):.1f}), held at the cycle start",
-      wrap + 1 == math.ceil(2 ** 32 / (step * 256)) and all(p == 0 and s_ == 0 for p, s_ in shot[wrap:]), shot[wrap - 1:wrap + 2])
-e.w32(LFO + 0x14, step)                              # the next note start recomputes the step (FUN_0806ef50)
-e.w32(LFO + 0x10, 0)
+step = int(2 ** 32 * 4.0 / 48000)
+loop = lfo_run(60, step)
+check("the LFO keeps cycling (no 1-Shot any more)", loop[-1][1] == step and any(b[0] < a[0] for a, b in zip(loop, loop[1:])))
+
+# --- AD slopes (3.1.v7): each stage (1 - e^(-k x)) / (1 - e^(-k)) of its time, k = 10 (1 - 2 slope), mirrored for the
+#     decay; the stage times unchanged
+def ad_shape(x, s):
+    k = 10 * (1 - 2 * s / 1000)
+    return x if abs(k) < 1e-3 else (1 - math.exp(-k * x)) / (1 - math.exp(-k))
+
+
+def ad_trace(a, d, sa, sd, blocks):
+    reset()
+    vamp(1)
+    setup(1.0, ad=(a, d, sa, sd))
+    fresh()
+    block()                                          # (the cache fills; AD waits for it)
+    reset()
+    vamp(1)
+    setup(1.0, ad=(a, d, sa, sd))
+    return ad_run(blocks, n=32)                      # one 32-frame step per block
+
+
+T = seconds(500)                                     # 7.5 s per stage
+steps = int(T * FS / 32)
+for sa in (0, 250, 500, 750, 1000):
+    tr = ad_trace(500, 500, sa, 500, steps + 4)
+    want = [ad_shape(min(1.0, (i + 1) * 32 / (T * FS)), 1000 - sa) for i in range(steps)]   # (Atk Slope reversed)
+    err = max(abs(a - b) for a, b in zip(tr[:steps - 1], want))
+    check(f"Atk Slope {sa / 10:.0f} %: the attack follows its curve (worst error {err:.4f}); full at the Attack time",
+          err < 0.01 and tr[steps] > 0.99 - 0.01 and e.r8(OBJ + 0x4F) == 2, (err, tr[steps - 2:steps + 2]))
+for sd in (0, 270, 500, 1000):
+    tr = ad_trace(0, 500, 500, sd, steps + 6)
+    want = [1 - ad_shape(min(1.0, (i + 1) * 32 / (T * FS)), sd) for i in range(steps)]
+    err = max(abs(a - b) for a, b in zip(tr[1:steps - 1], want[:steps - 2]))
+    check(f"Dec Slope {sd / 10:.0f} %: the decay follows its curve (worst error {err:.4f}); 0 at the Decay time",
+          err < 0.01 and tr[-1] == 0.0 and e.r8(OBJ + 0x4F) == 3, (err, tr[-4:]))
+q = [ad_trace(500, 500, s, 500, steps // 4)[-1] for s in (0, 500, 1000)]
+check(f"a quarter into the attack: 0 % {q[0]:.4f} (slow), 50 % {q[1]:.3f} (linear), 100 % {q[2]:.3f} (fast)",
+      q[0] < 0.002 and abs(q[1] - 0.25) < 0.01 and q[2] > 0.9, q)
+tr270 = ad_trace(0, 300, 500, 270, 300)
+old = [0.01 ** ((i * 32) / (seconds(300) * FS)) for i in range(300)]
+check("Dec Slope 27 % (the default) ~ the earlier exponential decay (within 0.02)",
+      max(abs(a - b) for a, b in zip(tr270[1:], old[1:]) if b > 0.02) < 0.02)
+# a retrigger restarts the attack from the level it is at, on the attack's curve
+reset()
+vamp(1)
+setup(1.0, ad=(300, 300, 1000, 500))
+fresh()
 block()
-check("1-Shot: the next note runs its cycle again", e.r32(LFO + 0x10) & 0xFFFFFFFF == step * 256)
+reset()
+vamp(1)
+setup(1.0, ad=(300, 300, 1000, 500))
+ad_run(40)
+lvl = ad_level()
+vamp(3)
+block()
+vamp(1)
+after = ad_run(1)[0]
+check(f"retrigger mid-attack: continues from its level ({lvl:.3f} -> {after:.3f}), no jump to 0", after >= lvl - 0.001 and after > 0.5,
+      (lvl, after))
+
+# --- self-oscillation (3.1.u): from Res ~93 % the resonant stage sings a sine at the cutoff, held at 0.5 by the
+# amplitude control; checked on the firmware's own output with an FFT (numpy)
+import numpy as np
+
+
+def osc_run(knob, res, morph=LP, seconds=1.5, x=None, ctl=None):
+    """one voice from note on: a short noise burst to start it (as any sound would), then silence (not flagged silent)"""
+    reset()
+    setup(knob, res, ftype=morph)
+    rng = np.random.default_rng(7)
+    blocks = int(seconds * FS / 256)
+    if x is None:
+        x = np.zeros(blocks * 256)
+        x[:256] = 0.2 * rng.uniform(-1, 1, 256)
+    out = []
+    for b_ in range(blocks):
+        if ctl:
+            ctl(b_)
+        l, _ = run(list(x[b_ * 256:(b_ + 1) * 256]))
+        out += l
+    return np.array(out)
+
+
+def spectrum(y, hz):
+    seg = y[len(y) // 2:]
+    sp = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+    k = int(np.argmax(sp))
+    a, b, c = (math.log(sp[k + d] + 1e-30) for d in (-1, 0, 1))
+    f0 = (k + 0.5 * (a - c) / (a - 2 * b + c)) * FS / len(seg)
+    harm = max(20 * math.log10(sp[int(round(k * m)) - 4:int(round(k * m)) + 5].max() / sp[k])
+               for m in (2, 3, 4, 5) if k * m + 5 < len(sp))
+    q = len(seg) // 8
+    peaks = [np.abs(seg[i * q:(i + 1) * q]).max() for i in range(8)]
+    return 1200 * math.log2(f0 / hz), harm, max(peaks), (max(peaks) - min(peaks)) / max(peaks)
+
+
+cents_ok, rows, levels = True, [], []
+for name, m in (("LP", LP), ("notch", NOTCH), ("HP", HP), ("Morph 25%", 250)):
+    for hz in (55, 220, 880, 3520, 10000):
+        want = curve(0x08060640, (knob_for(hz) + 1) / 2)
+        c, h, pk, var = spectrum(osc_run(knob_for(hz), 1.0, m), want)
+        rows.append((name, hz, round(c, 2), round(h), round(pk, 3), round(var, 4)))
+        levels.append(pk)
+worst_c = max(abs(r[2]) for r in rows)
+worst_h = max(r[3] for r in rows)
+check(f"full Res: self-oscillates at the cutoff in every Morph mode, within {worst_c:.2f} cents (55 Hz .. 10 kHz)",
+      worst_c < 1.0, rows)
+check(f"full Res: a clean sine, strongest harmonic {worst_h} dB", worst_h < -60, rows)
+check(f"full Res: a gentle sine, level {min(levels):.3f} .. {max(levels):.3f} across pitch and Morph (within 3.5 dB: the "
+      f"bass shelf lifts low notes in LP), steady", 0.2 < min(levels) and max(levels) < 0.4 and
+      20 * math.log10(max(levels) / min(levels)) < 3.5 and all(r[5] < 0.01 for r in rows), rows)
+y = osc_run(knob_for(440), 0.8)
+check("Res 80 %: rings, but no self-oscillation", np.abs(y[len(y) // 2:]).max() < 1e-3, np.abs(y[len(y) // 2:]).max())
+lv, hs = [], []
+for r_ in (0.95, 0.97, 1.0):
+    for hz in (55, 440, 3520):
+        y = osc_run(knob_for(hz), r_, seconds=2.0)
+        if hz == 440:
+            lv.append(np.abs(y[-9600:]).max())
+        hs.append(spectrum(y, curve(0x08060640, (knob_for(hz) + 1) / 2))[1])
+check(f"self-oscillation level rises with Res from its onset: 95 % {lv[0]:.2f}, 97 % {lv[1]:.2f}, full {lv[2]:.2f}",
+      0.05 < lv[0] < lv[1] < lv[2] < 0.55, lv)
+check(f"... and is a clean sine there too (Res 95 / 97 / 100 %, 55 Hz .. 3.5 kHz): strongest harmonic {max(hs):.0f} dB",
+      max(hs) < -60, [round(h) for h in hs])
+spots = [(pp, curve(0x08060640, pp)) for pp in (0.0, 0.137, 0.25, 0.5, 0.613, 0.75, 0.999)]
+dev = max(abs(1200 * math.log2(hz_ / (20 * 2 ** (10 * pp)))) for pp, hz_ in spots)
+check(f"stock cutoff curve is 20 Hz x 2^(10 x) within {dev:.2f} cents: KEY -> Filter +100 % tracks 1 octave per octave",
+      dev < 2.0, spots)
+y = osc_run(knob_for(1000), 1.0, LP, seconds=1.0)
+y2 = osc_run(knob_for(1000), 1.0, LP, seconds=1.0, x=np.zeros(int(FS / 256) * 256) + 0.0)
+check("no input at all (states zero): stays silent, no denormal noise or NaN", np.abs(y2).max() == 0.0, np.abs(y2).max())
+
+# full Res, full-scale noise, cutoff, Res and Morph jumping every block: bounded, finite
+rng = np.random.default_rng(3)
+noise = rng.uniform(-1, 1, 200 * 256)
+
+
+def ctl_wild(b_):
+    values[PARAMS + 8] = float(rng.uniform(-1, 1))
+    values[PARAMS + 0x44] = 1.0 if b_ % 3 else float(rng.uniform(0.8, 1.0))
+    set_pad(ftype=int(rng.integers(0, 1001)))
+
+
+y = osc_run(0.0, 1.0, seconds=200 * 256 / FS, x=noise, ctl=ctl_wild)
+check(f"full Res with full-scale noise and wild modulation: finite, bounded (peak {np.abs(y).max():.2f})",
+      np.isfinite(y).all() and np.abs(y).max() < 6, np.abs(y).max())
+y = osc_run(0.0, 1.0, seconds=200 * 256 / FS, x=0.9 * np.sign(np.sin(2 * np.pi * 3000 * np.arange(200 * 256) / FS)))
+check(f"full Res, a loud square at the cutoff's neighbourhood: finite, bounded (peak {np.abs(y).max():.2f})",
+      np.isfinite(y).all() and np.abs(y).max() < 6, np.abs(y).max())
+
+
+# no clicks while self-oscillating: Morph swept, Res pulled back to 80 % (the sine dies away smoothly) and up again
+def osc_clicks(ctl, blocks=96):
+    y = osc_run(knob_for(220), 1.0, LP, seconds=blocks * 256 / FS, ctl=ctl)
+    d = y[3:] - 3 * y[2:-1] + 3 * y[1:-2] - y[:-3]
+    return np.abs(d[40 * 256:]).max()
+
+
+def ctl_osc_morph(b_):
+    values[PARAMS + 8], values[PARAMS + 0x44] = knob_for(220), 1.0
+    if b_ >= 40:
+        set_pad(ftype=int(500 + 500 * math.sin((b_ - 40) / 5 - math.pi / 2)))
+
+
+base_d = osc_clicks(lambda b_: None)
+worst = osc_clicks(ctl_osc_morph)
+check(f"self-oscillating: no click sweeping Morph (worst step {worst:.5f}, steady sine {base_d:.5f}; clicks start ~0.003)",
+      worst < 0.001, (worst, base_d))
+
+
+def ctl_osc_res(b_):
+    values[PARAMS + 8] = knob_for(220)
+    values[PARAMS + 0x44] = 1.0 if b_ < 48 or b_ >= 72 else 0.8
+
+
+worst = osc_clicks(ctl_osc_res)
+check(f"self-oscillating: no click pulling Res back to 80 % and up again (worst step {worst:.5f})",
+      worst < 0.001, (worst, base_d))
+reset()
+setup(1.0, 1.0)
+l, _ = run(sine(1000))
+check("full Res: the filter is not skipped at LP fully open (it would cut a sine off)",
+      any(abs(a - b) > 1e-4 for a, b in zip(l, sine(1000))))
 
 print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)

@@ -1,0 +1,59 @@
+SD sectors read during run: 582
+profiled blocks: 4  instructions per block: [144626, 144315, 144629, 144268]
+mean instructions per block (caa4+cb1c, excl. ISRs): 144460   (ISR insns during blocks: 296)
+self-sum check: 144460
+
+Top 25 by SELF instructions (per block):
+     23988   16.6%  calls/blk    50  FUN_0805f5c0
+     23238   16.1%  calls/blk     1  FUN_08074f50
+     15908   11.0%  calls/blk    25  FUN_0805fd14
+      9754    6.8%  calls/blk     2  FUN_0806002c
+      6906    4.8%  calls/blk     2  FUN_08060490
+      6196    4.3%  calls/blk     4  FUN_0806163c
+      5439    3.8%  calls/blk     4  FUN_0806a6c0
+      5232    3.6%  calls/blk     8  FUN_080617c0
+      4680    3.2%  calls/blk     7  FUN_0804da6c
+      4374    3.0%  calls/blk     2  FUN_0805feb4
+      3978    2.8%  calls/blk     1  FUN_080603ec
+      3618    2.5%  calls/blk     2  FUN_0806035c
+      3362    2.3%  calls/blk     2  FUN_080619d0
+      2334    1.6%  calls/blk     6  FUN_0805f614
+      1806    1.3%  calls/blk     2  FUN_0805fd1c
+      1572    1.1%  calls/blk    12  FUN_08075e40
+      1398    1.0%  calls/blk     2  FUN_0804db4c
+      1288    0.9%  calls/blk     2  FUN_0805fd6c
+      1255    0.9%  calls/blk     4  FUN_08056fd0
+      1093    0.8%  calls/blk    16  FUN_080596b0
+      1028    0.7%  calls/blk    62  FUN_0805f2c8
+       779    0.5%  calls/blk    17  sub_0805e58c (in FUN_0805e33c+250)
+       718    0.5%  calls/blk     2  FUN_080450ba
+       687    0.5%  calls/blk    35  FUN_0806fb30
+       672    0.5%  calls/blk     1  FUN_0804e03c
+
+Top 25 by INCLUSIVE instructions (per block):
+    144460  100.0%  calls/blk     0  FUN_08041470
+    138942   96.2%  calls/blk     1  FUN_0804cb1c
+    117250   81.2%  calls/blk     1  FUN_08053164
+    100410   69.5%  calls/blk     1  sub_0804e98c (in FUN_0804e8f0+9c)
+    100364   69.5%  calls/blk     1  sub_08068cf4 (in FUN_08068c90+64)
+    100298   69.4%  calls/blk    17  sub_0805e58c (in FUN_0805e33c+250)
+    100222   69.4%  calls/blk     1  sub_0806201c (in FUN_08061c04+418)
+     99296   68.7%  calls/blk     1  FUN_080757d8
+     98034   67.9%  calls/blk     1  FUN_0804e2d4
+     97944   67.8%  calls/blk     1  FUN_08068c64
+     43168   29.9%  calls/blk    16  FUN_080596b0
+     34694   24.0%  calls/blk     4  FUN_08056fd0
+     23988   16.6%  calls/blk    50  FUN_0805f5c0
+     23642   16.4%  calls/blk     1  FUN_08074f50
+     15908   11.0%  calls/blk    25  FUN_0805fd14
+     14466   10.0%  calls/blk     1  sub_08054f34 (in FUN_080548c8+66c)
+     14354    9.9%  calls/blk     1  FUN_080548c8
+     12966    9.0%  calls/blk     2  FUN_08075b94
+     10055    7.0%  calls/blk     5  FUN_08055f0c
+      9754    6.8%  calls/blk     2  FUN_0806002c
+      9123    6.3%  calls/blk     7  FUN_0804da6c
+      6906    4.8%  calls/blk     2  FUN_08060490
+      6852    4.7%  calls/blk     4  FUN_080762d8
+      6196    4.3%  calls/blk     4  FUN_0806163c
+      6107    4.2%  calls/blk     5  FUN_08074a00
+      5477    3.8%  calls/blk     4  FUN_0806a6c0

@@ -13,7 +13,7 @@ from unicorn.arm_const import (UC_ARM_REG_LR, UC_ARM_REG_R0, UC_ARM_REG_R1, UC_A
 
 from emu import RET, STACK, Emu
 
-IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin"
+IMG = "out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+cave/BLACKBOX.bin"
 e = Emu(IMG, "out/cave.elf")
 e.uc.mem_map(0x38800000, 0x1000)                 # backup SRAM
 e.uc.mem_map(0x58024000, 0x1000)                 # RCC + PWR
@@ -286,10 +286,14 @@ def ids(a, n):
     return list(struct.unpack(f"<{n}H", e.uc.mem_read(a, 2 * n)))
 
 
-conf = {"Sample": ids(0x080EFD38, 13), "Multisample": ids(0x080EFAB0 + 4 * 0x48, 12), "Sample (empty pad)": ids(0x080EF4C8, 13)}
+conf = {"Sample": ids(0x080EFD38, 14), "Multisample": ids(0x080EFAB0 + 4 * 0x48, 13), "Sample (empty pad)": ids(0x080EF4C8, 14)}
 for name, l in conf.items():
     i = l.index(0xA0)
-    check(f"Conf, {name}: Glide and Glide Time right after Poly Mode, list still ends with 0", l[i + 1:i + 3] == [P_GLIDE, P_GLIDETIME] and 0 in l, l)
+    check(f"Conf, {name}: Filter Type 4th, no Osc Track (S.1: on the Osc tab), Glide and Glide Time right after Poly "
+          "Mode, list still ends with 0", l[3] == 0x1EF and 0x1E0 not in l and l[i + 1:i + 3] == [P_GLIDE, P_GLIDETIME]
+          and 0 in l, l)
+for name, a in (("Clip", 0x080EFA68), ("Slicer", 0x080EF900), ("Granular", 0x080EF630)):
+    check(f"Conf, {name}: no Osc Track (no oscillator there)", 0x1E0 not in ids(a, 12), ids(a, 12))
 
 print(f"{fails} failure(s)")
 sys.exit(1 if fails else 0)

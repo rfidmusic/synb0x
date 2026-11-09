@@ -23,6 +23,8 @@ import apply
 
 APP_NAME = "Synb0x Firmware Patcher"
 ABOUT = {
+    "S.1": "SEM / Polivoks filters with Morph, filter + AD envelopes, modulation oscillator, Mod tab, glide, "
+           "480 MHz and much less CPU.",
     "3.1.t": "Filter Morph: LP → notch → HP, modulatable. Filter envelope, Filt tab, KEY / FENV sources, "
              "glide, CPU meter.",
     "3.1.s": "Filter Type: LP / HP / BP. Filter envelope, Filt tab, KEY / FENV sources, glide, CPU meter.",

@@ -82,9 +82,12 @@ PATCHES = [
     # modulation targets: the stock 28-id list (0x080f12bc) -> 29 ids with Morph, at both literals and both counts
     (0x080B8924, word(0x080F12BC), word(sym["filt_mod_targets"])),
     (0x080B8BF8, word(0x080F12BC), word(sym["filt_mod_targets"])),
-    (0x080B88D6, bytes.fromhex("03f13801"), bytes.fromhex("03f13a01")),   # add.w r1, r3, #56 -> #58 (list end)
-    (0x080B896A, bytes.fromhex("1c22"), bytes.fromhex("1d22")),           # movs r2, #28 -> #29 (list rows)
-    (0x080B8980, bytes.fromhex("1c22"), bytes.fromhex("1d22")),           # movs r2, #28 -> #29 (knob grid)
+    (0x080B88D6, bytes.fromhex("03f13801"), bytes.fromhex("03f14001")),   # add.w r1, r3, #56 -> #64 (list end, 32 ids)
+    (0x080B896A, bytes.fromhex("1c22"), bytes.fromhex("2022")),           # movs r2, #28 -> #32 (list rows)
+    (0x080B8980, bytes.fromhex("1c22"), bytes.fromhex("2022")),           # movs r2, #28 -> #32 (knob grid)
+    # the tab bar for this pad: bar 0 (sample / clip / slicer) gets the Osc tab on sample pads only (3.1.uo)
+    hook(0x080B8844, 0x080B8724, "filt_bar_show"),
+    hook(0x080B8BCC, 0x080B8724, "filt_bar_show"),
     # Main tab: Filter and Res move to Filt; Level, Pitch, Pan, Saturation on top, the amp envelope stays on the bottom row
     *[(a, MAIN_OLD, MAIN_NEW) for a in MAIN_TABLES],
 ]

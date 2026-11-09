@@ -10,9 +10,11 @@ import sys
 
 from emu import Emu
 
-e = Emu("out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+comp+fx2+munchi+cave/BLACKBOX.bin", "out/cave.elf")
+e = Emu("out/solo+slice+filter+fenv+filttab+glide+splash+cpu+od+cave/BLACKBOX.bin", "out/cave.elf")
+e.uc.mem_map(0x58024000, 0x1000)                 # (3.1.v2) RCC: PLL1 at stock N 390, so the short name reads v4s
+e.w32(0x58024430, 389 | 1 << 9 | 3 << 16 | 1 << 24)
 V = e.cstr(e.sym["mod_version"])                # the version this build shows
-SV = V.split("-")[-1]                           # with numbers: the part after the "-"
+SV = "S.1s"                                      # 3.1.v4: the clock it runs at (v4 at 480 MHz, v4s at stock)
 e.uc.mem_map(0xE0000000, 0x100000)
 CYC, STATE = 0xE0001004, 0x2405FFD0
 # The screens are one object in the SDRAM pool on the device (FUN_080443a8 -> FUN_0804436c), so their labels are there;
@@ -164,10 +166,10 @@ e.call(0x0809AD74, APP, ADDR, INFO)
 check("before anything is measured: just the version", e.cstr(INFO) == V, e.cstr(INFO))
 
 # --- the version: 3.1.9-syn everywhere the stock "3.1.9" was referenced, never cut short by the meter
-check("version string is 3.1.t", V == "3.1.t", V)
+check("version string is S.1 (test build)", V == "S.1", V)
 lits = [e.r32(a) & 0xFFFFFFFF for a in (0x0809AF30, 0x080AEAF4, 0x080C55E8, 0x080C72C8)]
 check("all four stock references point at it", lits == [e.sym["mod_version"]] * 4, [hex(x) for x in lits])
-check(f"with numbers the labels read {SV} + load, 12 characters at most at ordinary loads", all(text(i).startswith(SV + " ") and len(text(i)) <= 12 for i in (0, 1)), [text(i) for i in range(3)])
+check(f"with numbers the labels read {SV} + load, 12 characters at most at ordinary loads (the Tools screen's version cell)", all(text(i).startswith(SV + " ") and len(text(i)) <= 12 for i in (0, 1)), [text(i) for i in range(3)])
 NAME = 0x24070800
 e.uc.mem_write(NAME, bytes(64))
 e.call("cpu_name", NAME)

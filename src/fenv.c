@@ -34,6 +34,28 @@ void glide_register(void *table);   /* glide.c: Glide and Glide Time, registered
    back to LP. */
 const char *const fenv_type_names[3] = {"LP", "HP", "BP"};
 
+/* Filter Type (Conf tab): which filter the pad's voices run (filter.c) */
+const char *const fenv_model_names[FMODELS] = {"SEM", "Polivoks"};
+const char *const fenv_off_on[2] = {"Off", "On"};
+const char *const fenv_wave_names[4] = {"Sine", "Square", "Triangle", "Saw"};
+const char *const fenv_oct_names[7] = {"-3", "-2", "-1", "0", "+1", "+2", "+3"};
+struct reg {
+    uint16_t id;
+    uint8_t type;
+    int16_t min, max;
+    const char *label, *xml;
+};
+static const struct reg osc_regs[] = {
+    {P_OSC_ON, TYPE_TOGGLE, 0, 1000, "Osc", "oscon"},
+    {P_OSC_MODE, TYPE_TOGGLE, 0, 1000, "OSC/MOD", "oscmode"},
+    {P_OSC_WAVE, 0, 0, 0, "Wave:", "oscwave"},                   /* a list: Sine, Square, Triangle, Saw */
+    {P_OSC_LEVEL, TYPE_UNIPOLAR, 0, 1000, "Level:", "osclevel"},
+    {P_OSC_OCT, 0, 0, 0, "Octave:", "oscoctave"},                 /* a list: -3 .. +3 */
+    {P_OSC_TUNE, TYPE_UNIPOLAR, 0, 1000, "Tune:", "osctune"},
+    {P_OSC_FINE, TYPE_BIPOLAR, -1000, 1000, "Fine:", "oscfine"},
+    {P_OSC_PW, TYPE_BIPOLAR, -1000, 1000, "Pulse W:", "oscpw"},
+};
+
 /* Replaces the Filter registration (bl @0x0808d59c): Filter as stock, then the new parameters. */
 void fenv_register(void *table, int param, int type, const char *label, int min, int max, const char *xml)
 {
@@ -47,9 +69,24 @@ void fenv_register(void *table, int param, int type, const char *label, int min,
     fw_register_num(table, P_FDEPTH, TYPE_BIPOLAR, "Depth:", -1000, 1000, "fenvdepth");
     glide_register(table);
     /* the AD envelope (modulation source AD), on the Mod tab after Key Trig */
-    fw_register_num(table, P_ADATTACK, TYPE_UNIPOLAR, "AD Attack:", 0, 1000, "adattack");
+    fw_register_num(table, P_ADATTACK, TYPE_UNIPOLAR, "AD Atk:", 0, 1000, "adattack");
     fw_register_num(table, P_ADDECAY, TYPE_UNIPOLAR, "AD Decay:", 0, 1000, "addecay");
-    fw_register_num(table, P_LFOMODE, TYPE_TOGGLE, "1-Shot", 0, 1000, "lfomode");   /* a button, like Key Trig */
+    /* (3.1.v7: LFO 1-Shot removed: the AD envelope does that job; a preset's lfomode is ignored) */
+    fw_register_num(table, P_ADATKSLOPE, TYPE_UNIPOLAR, "Atk Slope:", 0, 1000, "adatkslope");
+    fw_register_num(table, P_ADDECSLOPE, TYPE_UNIPOLAR, "Dec Slope:", 0, 1000, "addecslope");
+    fw_register_list(table, P_FMODEL, "Filter Type:", fenv_model_names, FMODELS, "filtermodel");   /* (a new name: the old list had Stock first) */
+    /* the oscillator (Osc tab) */
+    for (unsigned i = 0; i < sizeof osc_regs / sizeof osc_regs[0]; i++) {
+        const struct reg *r = &osc_regs[i];
+        if (r->id == P_OSC_OCT)
+            fw_register_list(table, r->id, r->label, fenv_oct_names, 7, r->xml);
+        else if (r->id == P_OSC_WAVE)
+            fw_register_list(table, r->id, r->label, fenv_wave_names, 4, r->xml);
+        else
+            fw_register_num(table, r->id, r->type, r->label, r->min, r->max, r->xml);
+    }
+    fw_register_num(table, P_OSC_TRACK, TYPE_TOGGLE, "Osc Track", 0, 1000, "osctrack");   /* Osc tab, a button like Osc
+                                                    (S.1; was an Off / On list on Conf: stores 0 / 1 either way) */
 }
 
 /* Replaces the "Filter defaults to 0" entry of both pad record types (bl @0x080940de type 3, @0x08094312 type 0x4c):
@@ -69,7 +106,15 @@ void fenv_defaults(void *store, int param, int value)
     fw_store_add(store, P_GLIDETIME, DEF_GLIDETIME);
     fw_store_add(store, P_ADATTACK, DEF_ADATTACK);       /* added as a pair: filter.c finds Decay right after Attack */
     fw_store_add(store, P_ADDECAY, DEF_ADDECAY);
-    fw_store_add(store, P_LFOMODE, DEF_LFOMODE);         /* right after the pair: filter.c reads it from there too */
+    fw_store_add(store, P_FMODEL, DEF_FMODEL);           /* then the Filter Type (right after the pair) */
+    /* then the oscillator, in this order (filter.c reads them by position after Filter Type): the record's 72nd..79th, then Osc Track */
+    static const int16_t osc_defaults[OSC_SETTINGS] = {DEF_OSC_ON, DEF_OSC_MODE, DEF_OSC_WAVE, DEF_OSC_LEVEL,
+                                                       DEF_OSC_OCT, DEF_OSC_TUNE, DEF_OSC_FINE, DEF_OSC_PW};
+    for (unsigned i = 0; i < OSC_SETTINGS; i++)
+        fw_store_add(store, osc_regs[i].id, osc_defaults[i]);
+    fw_store_add(store, P_OSC_TRACK, DEF_OSC_TRACK);     /* the record's 80th (capacity 88) */
+    fw_store_add(store, P_ADATKSLOPE, DEF_ADATKSLOPE);   /* 81st, 82nd (3.1.v7; filter.c reads them by position) */
+    fw_store_add(store, P_ADDECSLOPE, DEF_ADDECSLOPE);
 }
 
 /*
@@ -84,19 +129,20 @@ void fenv_defaults(void *store, int param, int value)
  * A modulation route is message 0x3a: +0xc destination param (u16), +0x10 slot (0..2), +0x14 source code (u16),
  * +0x16 amount (s16, / 1000).
  */
-const char *const fenv_source_names[11] = {
+const char *const fenv_source_names[12] = {
     (const char *)0x080cea68, /* none */ (const char *)0x080cea94, /* VEL  */
     (const char *)0x080ce644, /* LFO  */ (const char *)0x080cea70, /* PTCH */
     (const char *)0x080cea78, /* MODW */ (const char *)0x080cea80, /* MVOL */
     (const char *)0x080cea88, /* MPAN */ (const char *)0x080cea90, /* CC   */
-    "KEY", "FENV", "AD",
+    "KEY", "FENV", "AD", "OSC",
 };
-const uint16_t fenv_source_codes[11] = {0, 0xd, 4, 0x19, 0x1a, 0x1c, 0x1d, 0x8000, 0xe, SRC_FENV, SRC_AD};
+const uint16_t fenv_source_codes[12] = {0, 0xd, 4, 0x19, 0x1a, 0x1c, 0x1d, 0x8000, 0xe, SRC_FENV, SRC_AD, SRC_OSC};
 
-/* Where a voice-envelope source's object sits in the filter object, or -1 for a stock source */
+/* Where a voice-envelope source's object sits in the filter object, or -1 for a stock source; OSC: 0, a source the
+   stock engine never applies (filter.c applies it to Filter and Level itself, per sample) */
 static int env_src_off(unsigned src)
 {
-    return src == SRC_FENV ? FENV_SRC_OFF : src == SRC_AD ? AD_SRC_OFF : -1;
+    return src == SRC_FENV ? FENV_SRC_OFF : src == SRC_AD ? AD_SRC_OFF : src == SRC_OSC ? 0 : -1;
 }
 
 struct mod_msg {
@@ -175,7 +221,7 @@ void fenv_voice_copy(uint8_t *pad, uint8_t *voice)
     struct mod_row *row = ROWS(pad);
     for (unsigned i = 0, n = NROWS(pad); i < n && i < 8; i++) {
         int off = env_src_off(row[i].src);
-        if (off < 0)
+        if (off <= 0)                                    /* stock, or OSC (filter.c's own) */
             continue;
         const struct dest_map *d = dest_of(row[i].dest);
         if (d && d->a)
@@ -189,7 +235,7 @@ void fenv_mod_msg_b(uint8_t *pad, struct mod_msg *msg)
 {
     fw_mod_msg_b(pad, msg);
     int off = env_src_off(msg->src);
-    if (off < 0)
+    if (off <= 0)
         return;
     const struct dest_map *d = dest_of((uint16_t)msg->dest);
     if (!d || !d->b)

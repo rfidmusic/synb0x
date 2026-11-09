@@ -159,6 +159,14 @@ class Reverb {
     engine_.Clear();
   }
 
+  // Synb0x: clear one sixteenth of the delay memory (part 0..15), a word at a time, so an idle reverb can be emptied
+  // over 16 blocks instead of in one costly pass.
+  inline void ClearPart(int part) {
+    uint32_t* p = reinterpret_cast<uint32_t*>(buffer_) + part * (32768 / 2 / 16);
+    for (int i = 0; i < 32768 / 2 / 16; i++)
+      p[i] = 0;
+  }
+
   inline void SetFreeze(bool freeze) {
     freeze_ = freeze ? 1.f : 0.f;
   }
